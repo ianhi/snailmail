@@ -12,11 +12,6 @@ measurement: GET count, bytes, and **peak concurrency** (`max_in_flight`) — th
 last one is the whole point. Wall-clock can't distinguish "fast because cached" from
 "fast because concurrent"; `max_in_flight` can.
 
-## Status
-
-Alpha, working. Server + latency model + bandwidth pipe + counters + CLI are done
-and tested; `uv run pytest` is green. Not yet published to PyPI.
-
 ## Layout
 
 ```
@@ -72,24 +67,17 @@ uv run ruff check src tests
   the modelled RTT stays dominated by the knob. Revisit for spinning disks or very
   large single ranges.
 
-## Open threads / next
+## Non-goals
 
-- **Publish to PyPI** (name reserved): `uv build` then `uv publish`.
-- **Transport-accuracy** is intentionally out of scope: this is an application-level
-  `sleep()` model, not real-packet shaping. If someone needs that, point them at `tc
-  netem` / `dnctl`/`pfctl`, don't grow snailmail toward it.
-- A live `stats()` readout while serving could be nice; low priority.
+- **Transport-accurate shaping.** snailmail models latency and bandwidth at the
+  application layer (a `sleep()` plus a byte pipe), not on real packets. For
+  kernel-level RTT/bandwidth use `tc netem` (Linux) or `dnctl`/`pfctl` (macOS) in
+  front of any file server. Don't grow snailmail toward packet shaping.
+- **A general-purpose web server.** It serves one file on loopback for benchmarks.
 
-## Context: where it came from
+## Working notes
 
-Extracted from the `virtual-h5ad` project, where the open question was: does
-`anndata[mask].to_memory()` over an Icechunk virtual repo fan out concurrent GETs,
-or read serially? (Conclusion from the read call stack: it goes through zarr's
-`codec_pipeline → asyncio.gather`, i.e. concurrent — so a hand-rolled thread-pool
-reader was redundant.) snailmail is the harness to confirm that empirically.
-
-That end-to-end benchmark is currently **blocked upstream** by an Icechunk bug: it
-drops the port from virtual-chunk location URLs, so a repo pointed at
-`http://127.0.0.1:<ephemeral>/...` is unreadable (the port-less location no longer
-matches its container prefix). The `--port` argument exists partly so you can bind
-port 80 to sidestep it until the Icechunk fix lands.
+Current status, open tasks, and origin/context live in
+[docs/NOTES.md](docs/NOTES.md) — the mutable worklog agents update. Keep *this* file
+durable (purpose, design, conventions, non-goals); put anything time-specific in the
+worklog.
