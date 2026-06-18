@@ -6,8 +6,10 @@ not here.
 
 ## Status
 
-Alpha, working, release-staged for v0.1.0. Server, latency model, bandwidth pipe,
-counters, and CLI are done and tested (`uv run pytest` green; ruff clean).
+Alpha, working, release-staged for v0.1.0. Committed and pushed to
+`github.com/ianhi/snailmail` (main). Server, latency model, bandwidth pipe, counters,
+and CLI are done and tested (`uv run pytest`, `uv run ruff check`, `uv run mypy` all
+green). prek hooks (ruff lint + format + mypy + file hygiene) are configured.
 
 Release prep done:
 - CI: `.github/workflows/ci.yml` runs ruff + pytest on Linux/macOS across Python
@@ -18,8 +20,9 @@ Release prep done:
 - Git-based versioning via hatch-vcs (`dynamic = ["version"]`); the version comes
   from the git tag. Untagged builds get a dev version; tagging `v0.1.0` on a clean
   tree yields `0.1.0`. `__version__` is read from installed metadata.
-- Packaging verified: `uv build` produces a clean sdist (src/tests/docs only — no
-  worklog/CI/lock) + wheel; SPDX `License-Expression: MIT`; `twine check` passes
+- Packaging verified: `uv build` produces a clean sdist (src, tests, README, CHANGELOG,
+  LICENSE, AGENTS — no docs worklog / CI / lock) + wheel; SPDX `License-Expression: MIT`;
+  `twine check` passes
   (README renders). Fresh-venv install: imports, the CLI (`--dist`/`--json`/
   `--version`), and a live 206 range serve all work.
 - pyproject metadata filled in: per-version Python + OS classifiers, Repository /
@@ -34,10 +37,16 @@ API expanded for 0.1.0 (deliberately, with the owner):
   `url(key)` builds a key URL, `files()` lists keys. Single-file mode was dropped to
   keep one concept. The Icechunk/object-store many-objects case.
 - `stats()` now also reports `n_misses` (404s) and per-method / per-path counts.
-- Two independent pre-release subagent passes were run: a code/packaging review and a
-  black-box CLI-discovery test. Findings addressed, including a malformed-`Range` 500
-  (our accounting re-parse threw `ValueError`; now ignored per RFC 7233) and a
-  non-directory root that dumped a traceback (now a clean argparse error).
+- Independent pre-release subagent passes were run: code/packaging review, a black-box
+  CLI-discovery test, an acceptance test (31/31), plus `/simplify` and `/code-review`.
+  Findings addressed, including: a malformed-`Range` 500 (now 416 via `request.http_range`),
+  a non-directory root traceback (now a clean argparse error), and `start()` hanging on a
+  bind failure (now propagates).
+- Hand-rolled bits collapsed onto stdlib/aiohttp: Range parsing → `request.http_range`;
+  traversal check → `Path.is_relative_to`; bandwidth normalization owned by
+  `AsyncSharedPipe`; keep-alive → `threading.Event().wait()`. `_target_size` stays — see
+  its docstring (aiohttp won't expose pre-serve size/miss). Considered Starlette/Uvicorn
+  and rejected: the HTTP side is already delegated; the rest is the instrument.
 
 ## Open tasks
 

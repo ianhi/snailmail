@@ -22,8 +22,9 @@ src/snailmail/
   server.py       # LatencyRangeServer (the threaded aiohttp wrapper)
   cli.py          # the `snailmail` CLI (main, --dist arg wiring)
 tests/
-  test_server.py   # range correctness, latency, bandwidth, concurrency, counters
-  test_latency.py  # distributions + CLI --dist wiring
+  test_server.py     # range correctness, latency, bandwidth, concurrency, counters
+  test_directory.py  # directory serving, misses, traversal, stats, set_latency, --version
+  test_latency.py    # distributions + CLI --dist wiring
 ```
 
 One file per concern; keep each small and single-purpose. The split is to stay
@@ -33,10 +34,15 @@ readable in a sitting.
 ## Develop
 
 ```bash
-uv sync                       # aiohttp, numpy + dev: pytest, ruff
+uv sync                       # aiohttp, numpy + dev: pytest, ruff, mypy
 uv run pytest                 # all green
 uv run ruff check src tests
+uv run mypy                   # type gate (config in pyproject)
 ```
+
+Pre-commit hooks (ruff lint + ruff format + mypy + file hygiene) run via
+[prek](https://github.com/j178/prek): `prek install` once, then they fire on commit;
+`prek run --all-files` to run them by hand.
 
 ## Conventions
 
@@ -83,10 +89,12 @@ uv run ruff check src tests
   peak-concurrency measurement clean. `start()` spawns the loop thread; `stop()`
   stops it. Don't reintroduce thread-per-request.
 - **Counters under a lock.** `stats()` is a post-hoc, atomic snapshot (counts, total
-  bytes, peak `max_in_flight`, and per-method / per-path breakdowns) that persists
-  until `reset_counts()`. The `Range` header is parsed a second time in `_account`
-  **for accounting only** (counts + bandwidth bytes) — serving correctness still
-  comes entirely from aiohttp. If you need exact served bytes, that's the seam.
+  bytes, 404 misses, peak `max_in_flight`, and per-method / per-path breakdowns) that
+  persists until `reset_counts()`. For accounting only, `_range_bytes` reuses aiohttp's
+  own `request.http_range` parser (not a hand-rolled one) so the counted bytes match
+  what the static handler serves; serving correctness still comes entirely from
+  aiohttp. See `_target_size`'s docstring for why size/miss are resolved up front
+  rather than read back from aiohttp.
 
 - **Compose aiohttp, don't subclass it.** aiohttp has no server base class meant for
   extension (its docs steer you to middlewares/signals over subclassing
@@ -104,7 +112,7 @@ uv run ruff check src tests
   application layer (a `sleep()` plus a byte pipe), not on real packets. For
   kernel-level RTT/bandwidth use `tc netem` (Linux) or `dnctl`/`pfctl` (macOS) in
   front of any file server. Don't grow snailmail toward packet shaping.
-- **A general-purpose web server.** It serves one file on loopback for benchmarks.
+- **A general-purpose web server.** It serves a directory on loopback for benchmarks.
 
 ## Working notes
 
