@@ -15,11 +15,11 @@ jobs:
     permissions:
       id-token: write          # required for Trusted Publishing (OIDC); no token needed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}  # the released tag, not the default branch
           fetch-depth: 0       # hatch-vcs needs full history + tags to resolve the version
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8
       - run: uv build
       - name: Refuse to publish a non-release (dev/local) version
         run: |

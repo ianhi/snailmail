@@ -1,5 +1,8 @@
 # snailmail
 
+[![PyPI](https://img.shields.io/pypi/v/snailmail.svg)](https://pypi.org/project/snailmail/)
+[![CI](https://github.com/ianhi/snailmail/actions/workflows/ci.yml/badge.svg)](https://github.com/ianhi/snailmail/actions/workflows/ci.yml)
+
 A local HTTP server that serves a directory over HTTP Range, injecting per-request
 latency and a bandwidth cap, and counts GETs and peak concurrency.
 
