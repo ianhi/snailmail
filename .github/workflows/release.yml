@@ -1,10 +1,12 @@
 name: Release
 
-# Tag a clean commit `vX.Y.Z` to publish that version to PyPI via Trusted Publishing.
-# hatch-vcs derives the version from the tag, so the tag IS the version.
+# Publishing a GitHub Release (on a `vX.Y.Z` tag) ships that version to PyPI via
+# Trusted Publishing. A Release is tied to its tag and hatch-vcs derives the version
+# from that tag, so the tag IS the version; the guard below refuses anything that
+# didn't resolve to a clean release version.
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 jobs:
   release:
@@ -15,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.release.tag_name }}  # the released tag, not the default branch
           fetch-depth: 0       # hatch-vcs needs full history + tags to resolve the version
       - uses: astral-sh/setup-uv@v5
       - run: uv build

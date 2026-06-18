@@ -51,11 +51,12 @@ API expanded for 0.1.0 (deliberately, with the owner):
 ## Open tasks
 
 - **Finish Trusted Publishing setup (needs the maintainer).** `.github/workflows/release.yml`
-  is in place: tag `vX.Y.Z` → `uv build` → `pypa/gh-action-pypi-publish` via OIDC
-  (`id-token: write`, environment `pypi`), with a guard that refuses dev/local
-  versions. Remaining: on PyPI, register the trusted publisher for project `snailmail`,
-  owner/repo `ianhi/snailmail`, workflow `release.yml`, environment `pypi`; then tag a
-  clean `v0.1.0` to publish. Do NOT tag/publish without explicit sign-off.
+  is in place: publishing a GitHub **Release** (on a `vX.Y.Z` tag) → `uv build` →
+  `pypa/gh-action-pypi-publish` via OIDC (`id-token: write`, environment `pypi`), with a
+  guard that refuses dev/local versions. Remaining: on PyPI, register the trusted
+  publisher for project `snailmail`, owner/repo `ianhi/snailmail`, workflow `release.yml`,
+  environment `pypi`; then cut a GitHub Release on tag `v0.1.0` to publish. Do NOT
+  release/publish without explicit sign-off.
 - **Time-varying bandwidth** — deferred (see below). Candidate for 0.2.0.
 - An *empirical* latency distribution (feed measured samples/percentiles) — 0.2.0.
 - A live `stats()` readout while serving (low priority).
