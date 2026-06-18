@@ -19,7 +19,7 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}  # the released tag, not the default branch
           fetch-depth: 0       # hatch-vcs needs full history + tags to resolve the version
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.2.0
       - run: uv build
       - name: Refuse to publish a non-release (dev/local) version
         run: |
