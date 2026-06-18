@@ -4,7 +4,23 @@ For benchmarking range / object-store / virtual-chunk reads under realistic netw
 conditions. See :class:`LatencyRangeServer`.
 """
 
-from snailmail.server import AsyncSharedPipe, LatencyModel, LatencyRangeServer
+from importlib.metadata import PackageNotFoundError, version
 
-__all__ = ["LatencyRangeServer", "LatencyModel", "AsyncSharedPipe"]
-__version__ = "0.1.0"
+from snailmail.bandwidth import AsyncSharedPipe
+from snailmail.latency import Exponential, Fixed, LatencyDist, LogNormal, Normal
+from snailmail.server import LatencyRangeServer
+
+try:
+    __version__ = version("snailmail")  # derived from the git tag at build time (hatch-vcs)
+except PackageNotFoundError:  # running from a source tree with no install
+    __version__ = "0+unknown"
+
+__all__ = [
+    "LatencyRangeServer",
+    "AsyncSharedPipe",
+    "LatencyDist",
+    "LogNormal",
+    "Normal",
+    "Exponential",
+    "Fixed",
+]

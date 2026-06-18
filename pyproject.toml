@@ -1,17 +1,23 @@
 [project]
 name = "snailmail"
-version = "0.1.0"
-description = "A local HTTP file server with injectable latency and bandwidth limits, for benchmarking range / object-store / virtual-chunk reads under realistic network conditions."
+dynamic = ["version"]
+description = "A local HTTP server that serves a directory over Range with injectable latency and bandwidth limits, for benchmarking range / object-store / virtual-chunk reads under realistic network conditions."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Ian Hunt-Isaak", email = "ian@earthmover.io" }]
 keywords = ["http", "latency", "bandwidth", "benchmark", "range-requests", "object-store", "zarr", "icechunk"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
     "Topic :: System :: Benchmark",
 ]
@@ -21,21 +27,35 @@ dependencies = [
 ]
 
 [project.scripts]
-snailmail = "snailmail.server:main"
+snailmail = "snailmail.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ianhi/snailmail"
+Repository = "https://github.com/ianhi/snailmail"
 Issues = "https://github.com/ianhi/snailmail/issues"
+Changelog = "https://github.com/ianhi/snailmail/blob/main/CHANGELOG.md"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/snailmail"]
 
+[tool.hatch.build.targets.sdist]
+# Ship source + the docs a consumer might want; leave out the internal worklog and
+# repo/CI plumbing.
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE", "AGENTS.md"]
+
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+files = ["src/snailmail"]
+python_version = "3.10"

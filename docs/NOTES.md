@@ -6,13 +6,58 @@ not here.
 
 ## Status
 
-Alpha, working. Server, latency model, bandwidth pipe, counters, and CLI are done
-and tested (`uv run pytest` green; ruff clean). Not yet published to PyPI.
+Alpha, working, release-staged for v0.1.0. Server, latency model, bandwidth pipe,
+counters, and CLI are done and tested (`uv run pytest` green; ruff clean).
+
+Release prep done:
+- CI: `.github/workflows/ci.yml` runs ruff + pytest on Linux/macOS across Python
+  3.10–3.13 via uv (`fetch-depth: 0` so hatch-vcs sees tags).
+- Release: `.github/workflows/release.yml` — tag `vX.Y.Z` → `uv build` →
+  `pypa/gh-action-pypi-publish` via OIDC Trusted Publishing (`id-token: write`,
+  environment `pypi`), guarded against publishing dev/local versions.
+- Git-based versioning via hatch-vcs (`dynamic = ["version"]`); the version comes
+  from the git tag. Untagged builds get a dev version; tagging `v0.1.0` on a clean
+  tree yields `0.1.0`. `__version__` is read from installed metadata.
+- Packaging verified: `uv build` produces a clean sdist (src/tests/docs only — no
+  worklog/CI/lock) + wheel; SPDX `License-Expression: MIT`; `twine check` passes
+  (README renders). Fresh-venv install: imports, the CLI (`--dist`/`--json`/
+  `--version`), and a live 206 range serve all work.
+- pyproject metadata filled in: per-version Python + OS classifiers, Repository /
+  Changelog URLs.
+- `CHANGELOG.md` (Keep a Changelog) with a 0.1.0 entry.
+
+API expanded for 0.1.0 (deliberately, with the owner):
+- Package split by concern: `latency.py`, `bandwidth.py`, `server.py`, `cli.py`.
+- Pluggable latency distributions (`LogNormal`/`Normal`/`Exponential`/`Fixed`) with
+  explicit per-distribution parameters; no overloaded magic knob, no shorthand.
+- **Directory-only** serving (via aiohttp `add_static`); `base` is the root,
+  `url(key)` builds a key URL, `files()` lists keys. Single-file mode was dropped to
+  keep one concept. The Icechunk/object-store many-objects case.
+- `stats()` now also reports `n_misses` (404s) and per-method / per-path counts.
+- Two independent pre-release subagent passes were run: a code/packaging review and a
+  black-box CLI-discovery test. Findings addressed, including a malformed-`Range` 500
+  (our accounting re-parse threw `ValueError`; now ignored per RFC 7233) and a
+  non-directory root that dumped a traceback (now a clean argparse error).
 
 ## Open tasks
 
-- Publish to PyPI (name reserved): `uv build` then `uv publish`.
+- **Finish Trusted Publishing setup (needs the maintainer).** `.github/workflows/release.yml`
+  is in place: tag `vX.Y.Z` → `uv build` → `pypa/gh-action-pypi-publish` via OIDC
+  (`id-token: write`, environment `pypi`), with a guard that refuses dev/local
+  versions. Remaining: on PyPI, register the trusted publisher for project `snailmail`,
+  owner/repo `ianhi/snailmail`, workflow `release.yml`, environment `pypi`; then tag a
+  clean `v0.1.0` to publish. Do NOT tag/publish without explicit sign-off.
+- **Time-varying bandwidth** — deferred (see below). Candidate for 0.2.0.
+- An *empirical* latency distribution (feed measured samples/percentiles) — 0.2.0.
 - A live `stats()` readout while serving (low priority).
+
+## Deferred: time-varying bandwidth
+
+The shared pipe's rate `B` is a single chokepoint that could become a function of
+time (schedule / sinusoid / random walk). Left out of 0.1.0 on purpose: to keep
+benchmarks reproducible and attributable it needs a *seeded, declarative* schedule,
+which is its own mini-design, and it drifts toward the transport-shaping non-goal.
+The seam is there in `bandwidth.py` when we want it.
 
 ## Origin / context
 

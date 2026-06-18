@@ -1,8 +1,7 @@
 # snailmail
 
-A local HTTP file server that serves a file over **HTTP Range** while injecting
-**tunable latency and bandwidth limits** — and counts the GETs and peak concurrency
-it sees.
+A local HTTP server that serves a directory over HTTP Range, injecting per-request
+latency and a bandwidth cap, and counts GETs and peak concurrency.
 
 Use it to benchmark range-based readers — object stores, Zarr/Icechunk virtual
 chunks, tiled image formats — under realistic network conditions, on your laptop,
@@ -10,13 +9,12 @@ with no cloud and no root.
 
 ## Why you'd want it
 
-Local disk hides the cost that dominates remote reads: every ranged read that
-becomes a network round-trip. A read pattern that's instant against a warm page
-cache can be minutes of serial round-trips against object storage. snailmail puts
-the round-trip back — a per-request latency draw and a shared bandwidth pipe — so
-you can see how a reader *actually* behaves over the wire, and crucially **whether
-it overlaps its requests** (the single biggest performance lever). `max_in_flight`
-is the honest signal that wall-clock alone can't give you.
+Local disk hides the cost that dominates remote reads: network round-trips.
+A read pattern that finishes instantly against a warm page cache can take
+minutes of serial round-trips against object storage. snailmail adds a
+per-request latency draw and a shared bandwidth pipe so you can measure how a
+reader behaves over the wire. `max_in_flight` tells you peak concurrency, which
+wall-clock time alone cannot.
 
 ## Install
 
@@ -26,51 +24,100 @@ uv add snailmail        # or: pip install snailmail
 
 ## Use it in a benchmark
 
-```python
-from snailmail import LatencyRangeServer
+snailmail serves a directory. Every file under the root is reachable at its path
+relative to the root, which matches the shape of an object store or Icechunk virtual
+dataset (one object per file). Point your reader at `server.base` and have it fetch
+keys like `chunks/0.0.0`.
 
-with LatencyRangeServer("big.h5ad", latency_ms=40, bandwidth_mbs=100) as server:
+```python
+from snailmail import LatencyRangeServer, LogNormal
+
+with LatencyRangeServer("my_zarr_store/", latency=LogNormal(mode_ms=40), bandwidth_mbs=100) as server:
     server.reset_counts()
-    read_something(server.url)         # http://127.0.0.1:<port>/big.h5ad
-    print(server.stats())              # {'n_gets': 312, 'max_in_flight': 16, 'total_bytes': ..}
+    open_and_read(server.base)         # your reader: obstore, icechunk, zarr, ...
+    print(server.stats())
+    # {'n_gets': 312, 'n_requests': 312, 'n_misses': 0, 'max_in_flight': 16,
+    #  'total_bytes': .., 'methods': {'GET': 312}, 'paths': {..}}
 ```
 
-If your reader fetches serially, `max_in_flight` stays 1; if it fans out
-concurrently, it climbs. Tune live between measurements with `set_latency_ms`,
-`set_bandwidth_mbs`, and `reset_counts`.
+`open_and_read` stands in for the reader you're benchmarking. It makes HTTP GETs
+(with `Range` headers) against `server.base`; snailmail injects the latency, meters
+the bytes through the bandwidth pipe, and streams the file from disk in response. A
+direct request looks like this:
 
-## Or from the CLI
+```python
+import urllib.request
+
+with LatencyRangeServer("my_zarr_store/") as server:
+    req = urllib.request.Request(server.url("chunks/0.0.0"), headers={"Range": "bytes=0-1023"})
+    first_kib = urllib.request.urlopen(req).read()
+```
+
+`server.url(key)` builds the URL for a key; `server.files()` lists the served keys.
+`stats()` is a snapshot of request counters since the last `reset_counts()`:
+`n_requests` counts every request, `n_gets` only the GETs, and `n_misses` the
+requests for keys that don't exist (404, like an object store's NoSuchKey). Tune
+between measurements with `set_latency(dist)`, `set_bandwidth_mbs(x)`, and
+`reset_counts()`.
+
+Latency is a pluggable distribution passed as `latency=`:
+
+```python
+from snailmail import LogNormal, Normal, Exponential, Fixed
+
+LogNormal(mode_ms=45, sigma=0.5)   # unimodal hump with long right tail; fits object-store GET RTT
+Normal(mean_ms=45, std_ms=10)      # symmetric, truncated at 0
+Exponential(mean_ms=45)            # peak at 0; a poor model for GET RTT
+Fixed(20)                          # deterministic
+```
+
+`latency=None` (the default) injects no latency.
+
+## From the CLI
 
 ```bash
-snailmail big.h5ad --latency-ms 45              # lognormal, mode 45 ms
-snailmail big.h5ad --latency-ms 45 --sigma 0.7  # heavier tail
-snailmail big.h5ad --latency-ms 20 --fixed      # deterministic 20 ms
-snailmail big.h5ad --bandwidth-mbs 100 --port 8080
+snailmail ./store --dist lognormal --mode-ms 45 --sigma 0.5
+snailmail ./store --dist normal --mean-ms 45 --std-ms 10
+snailmail ./store --dist exponential --mean-ms 45
+snailmail ./store --dist fixed --value-ms 20
+snailmail ./store --bandwidth-mbs 100 --port 8080 --json   # no latency; JSON address line
 ```
+
+The argument is the directory to serve.
+
+`--json` prints a single machine-readable line and flushes it before serving,
+so a script can spawn snailmail, read the bound address from stdout, and proceed.
+
+The CLI rejects a flag that doesn't belong to the chosen `--dist`. Omit `--dist`
+for no injected latency.
 
 ## What it models
 
-- **Latency** — a draw from a **lognormal** distribution, which fits object-store
-  GET RTT well (a unimodal hump with a long right tail). You set the PDF *mode* (the
-  peak, `--latency-ms`); `--sigma` controls the tail. `--fixed` sleeps exactly the
-  mode (a deterministic reference).
-- **Bandwidth** — one shared FIFO pipe (`--bandwidth-mbs`): per-request round-trips
-  stay parallel, but response *bytes* serialize through the pipe, so aggregate
-  egress is capped and over-read costs real transfer time. Omit for unlimited.
+**Latency** is a per-request draw from the chosen distribution. `lognormal` is
+the recommended default: parameterise it by the PDF mode (`--mode-ms`) and shape
+(`--sigma`). `normal`, `exponential`, and `fixed` are available for comparison.
+
+**Bandwidth** is a single shared FIFO pipe (`--bandwidth-mbs`, MB/s = 1e6 bytes/s).
+Per-request round-trips run in parallel, but response bytes serialize through the
+pipe, so aggregate egress is capped and over-read costs real transfer time. Omit
+for unlimited bandwidth.
 
 HTTP correctness (206, `Content-Range`, suffix ranges, 416, conditional requests)
-and on-disk streaming come from aiohttp's `web.FileResponse` — the file is never
+and on-disk streaming come from aiohttp's `web.FileResponse`. Files are never
 loaded into RAM, so multi-gigabyte files work.
+
+Missing keys return 404 and are counted in `n_misses`, matching object-store
+NoSuchKey behavior.
 
 ## Notes
 
 - Loopback only (binds `127.0.0.1`); nothing leaves the machine.
 - Consumers must opt into plain HTTP: obstore `client_options={"allow_http": True}`,
   icechunk `http_store({"allow_http": "true"})`.
-- The injected latency is *added* to the real (sub-millisecond, local-SSD)
-  range-read time, so the modelled RTT stays dominated by your knob.
-- For *transport-accurate* shaping on real packets, use `tc netem` (Linux) or
-  `dnctl`/`pfctl` (macOS) in front of any file server; snailmail trades that for
-  zero-setup, in-process instrumentation.
+- The injected latency is added to the real (sub-millisecond, local-SSD)
+  range-read time, so the modelled RTT is dominated by the configured value.
+- For transport-accurate shaping on real packets, use `tc netem` (Linux) or
+  `dnctl`/`pfctl` (macOS) in front of any file server. snailmail trades that
+  for zero-setup, in-process instrumentation.
 
 Contributing? See [AGENTS.md](AGENTS.md). MIT licensed.

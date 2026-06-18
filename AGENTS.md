@@ -16,12 +16,19 @@ last one is the whole point. Wall-clock can't distinguish "fast because cached" 
 
 ```
 src/snailmail/
-  __init__.py      # exports LatencyRangeServer, LatencyModel, AsyncSharedPipe
-  server.py        # all of it: the three classes + the `snailmail` CLI (main)
-tests/test_server.py  # range correctness, latency, bandwidth, concurrency, counters
+  __init__.py     # public exports
+  latency.py      # LatencyDist + LogNormal / Normal / Exponential / Fixed
+  bandwidth.py    # AsyncSharedPipe
+  server.py       # LatencyRangeServer (the threaded aiohttp wrapper)
+  cli.py          # the `snailmail` CLI (main, --dist arg wiring)
+tests/
+  test_server.py   # range correctness, latency, bandwidth, concurrency, counters
+  test_latency.py  # distributions + CLI --dist wiring
 ```
 
-It's one module on purpose — keep it that way unless it genuinely outgrows it.
+One file per concern; keep each small and single-purpose. The split is to stay
+easily editable, not an invitation to grow a framework — the whole thing should stay
+readable in a sitting.
 
 ## Develop
 
@@ -46,13 +53,28 @@ uv run ruff check src tests
   hand-rolled `BaseHTTPRequestHandler`. The file is never read into RAM, so multi-GB
   files work. Our consumers issue single-range GETs only, so multi-range responses
   are out of scope.
-- **Latency = lognormal**, parameterised by the PDF **mode** (`latency_ms`) and shape
-  `sigma`. Object-store GET RTT is a unimodal hump with a long right tail; lognormal
-  fits, a shifted-exponential doesn't (its peak sits at the floor). Draws are
-  **pre-generated once with numpy and served round-robin** — O(1) in the hot path, no
-  per-request RNG, exactly reproducible. The pool index is unsynchronised on purpose:
-  all requests run on one event-loop thread, so it's safe. If you ever move to
-  multiple loops/threads, that assumption breaks.
+
+- **Serves a directory, always.** The root is served with aiohttp's `add_static`
+  (range-correct *and* traversal-safe — don't hand-roll path joining). One object per
+  file is the shape that matters for the Icechunk/object-store use case; to benchmark
+  a single file, point at the directory containing it. There is deliberately no
+  single-file mode — it added a `url`-vs-`base` duality and a custom handler for no
+  real benefit. `base` is the root; `url(key)` builds a key URL. `FileResponse` defers
+  its 404 to send time, so **misses are detected up front** via `_target_size()`
+  (which also yields the size for byte accounting), not by inspecting the response
+  status — a miss is a read whose path resolves to no file under the root, counted in
+  `n_misses`.
+- **Latency = a pluggable `LatencyDist`** (`latency.py`): `LogNormal`, `Normal`,
+  `Exponential`, `Fixed`. **Lognormal is the recommended default and the one to reach
+  for** — object-store GET RTT is a unimodal hump with a long right tail, which it
+  fits; it's parameterised by the PDF **mode** (`mode_ms`) and shape `sigma`. The
+  others exist for comparison, not because they model object stores well — notably
+  `Exponential`'s peak sits at the floor, which is *wrong* for GET RTT; offer it, but
+  don't recommend it. Every dist **pre-generates its pool once with numpy and serves
+  it round-robin** — O(1) in the hot path, no per-request RNG, exactly reproducible
+  per seed. The pool index is unsynchronised on purpose: all requests run on one
+  event-loop thread, so it's safe. If you ever move to multiple loops/threads, that
+  assumption breaks. Negative draws (Normal's left tail) are truncated at 0.
 - **Bandwidth = one shared FIFO pipe** (`AsyncSharedPipe`): per-request RTTs stay
   parallel; response *bytes* serialize through the pipe, so egress is capped and
   over-read costs real time.
@@ -60,9 +82,18 @@ uv run ruff check src tests
   sleeps overlap with no thread-pool ceiling — exactly what makes the
   peak-concurrency measurement clean. `start()` spawns the loop thread; `stop()`
   stops it. Don't reintroduce thread-per-request.
-- **Counters under a lock.** The `Range` header is parsed a second time in `_account`
+- **Counters under a lock.** `stats()` is a post-hoc, atomic snapshot (counts, total
+  bytes, peak `max_in_flight`, and per-method / per-path breakdowns) that persists
+  until `reset_counts()`. The `Range` header is parsed a second time in `_account`
   **for accounting only** (counts + bandwidth bytes) — serving correctness still
   comes entirely from aiohttp. If you need exact served bytes, that's the seam.
+
+- **Compose aiohttp, don't subclass it.** aiohttp has no server base class meant for
+  extension (its docs steer you to middlewares/signals over subclassing
+  `web.Application`). `LatencyRangeServer` is a threaded lifecycle + counters facade
+  around `web.Application` + `AppRunner`/`TCPSite`; keep it that way. The one private
+  touch is reading the bound ephemeral port off `site._server.sockets` — aiohttp
+  exposes no public API for it.
 - **Injected latency is added on top** of the real (sub-ms, local-SSD) range read, so
   the modelled RTT stays dominated by the knob. Revisit for spinning disks or very
   large single ranges.

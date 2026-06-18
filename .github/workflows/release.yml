@@ -1,0 +1,28 @@
+name: Release
+
+# Tag a clean commit `vX.Y.Z` to publish that version to PyPI via Trusted Publishing.
+# hatch-vcs derives the version from the tag, so the tag IS the version.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: pypi          # bind this environment in the PyPI trusted-publisher config
+    permissions:
+      id-token: write          # required for Trusted Publishing (OIDC); no token needed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # hatch-vcs needs full history + tags to resolve the version
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - name: Refuse to publish a non-release (dev/local) version
+        run: |
+          for f in dist/*; do
+            case "$f" in
+              *dev*|*+*) echo "Not a clean tagged version: $f" && exit 1 ;;
+            esac
+          done
+      - uses: pypa/gh-action-pypi-publish@release/v1
