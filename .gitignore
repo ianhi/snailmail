@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments / uv
+.venv/
+venv/
+env/
+.uv/
+
+# Packaging / build backends
+*.whl
+*.tar.gz
+
+# Testing / coverage / type / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Tooling caches
+.cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+.jupyter/
+*.ipynb_ystore.db
+
+# Local scratch data the server might be pointed at (don't commit big test files)
+/data/
+*.h5ad
+*.tiff
+*.zarr/
