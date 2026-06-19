@@ -105,6 +105,40 @@ def test_url_builds_key_under_base(datadir):
 
 
 # ---------------------------------------------------------------------------
+# 2b. files()/n_files mirror what aiohttp actually serves (symlink consistency)
+# ---------------------------------------------------------------------------
+
+
+def test_symlink_target_inside_root_is_listed_and_served(tmp_path):
+    real = tmp_path / "real.bin"
+    real.write_bytes(b"a" * 256)
+    os.symlink(real, tmp_path / "link.bin")
+    with LatencyRangeServer(tmp_path) as s:
+        assert s.files() == ["link.bin", "real.bin"]
+        status, body = _get(s.url("link.bin"))
+        assert status == 200 and body == b"a" * 256
+
+
+def test_symlink_target_outside_root_not_listed_and_404s(tmp_path):
+    # The natural "serve a big fixture without copying" move — a symlink whose
+    # target lives outside the served root. aiohttp 404s it (resolved path escapes
+    # root), so files()/n_files and _target_size must agree it is absent.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = outside / "big.bin"
+    real.write_bytes(b"x" * 1000)
+    served = tmp_path / "served"
+    served.mkdir()
+    os.symlink(real, served / "big.bin")
+    with LatencyRangeServer(served) as s:
+        assert s.files() == []
+        assert s.describe()["n_files"] == 0
+        assert s._target_size("/big.bin") is None
+        status, _ = _get_status(s.url("big.bin"))
+        assert status == 404
+
+
+# ---------------------------------------------------------------------------
 # 3. Miss counting
 # ---------------------------------------------------------------------------
 

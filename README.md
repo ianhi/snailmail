@@ -32,6 +32,13 @@ relative to the root, which matches the shape of an object store or Icechunk vir
 dataset (one object per file). Point your reader at `server.base` and have it fetch
 keys like `chunks/0.0.0`.
 
+A key is served iff its resolved real path is a file **inside** the root. Symlinks are
+followed, but a symlink whose target escapes the root is not served (it 404s) and is
+not listed by `files()` or counted in `n_files` — index and serving agree. To benchmark
+a large fixture without copying it, **hardlink** it into the served dir (same
+filesystem) or just point `root` at the directory that already contains it; a symlink
+pointing outside the root won't work.
+
 ```python
 from snailmail import LatencyRangeServer, LogNormal
 
