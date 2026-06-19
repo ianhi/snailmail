@@ -197,8 +197,24 @@ class LatencyRangeServer:
         return f"{self.base}{key.lstrip('/')}"
 
     def files(self) -> list[str]:
-        """The served keys: relative paths of every file under the root (sorted)."""
-        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
+        """The served keys: relative paths of every file under the root (sorted).
+
+        A path is a served key iff it maps to a real file *inside* the root — the
+        same resolve-then-in-root rule aiohttp's static handler and ``_target_size``
+        apply. ``p.is_file()`` alone would follow a symlink without re-checking the
+        target, so a symlink whose target escapes the root (a 404 on GET, a miss in
+        ``_target_size``) must not be listed here or ``n_files`` would over-count
+        keys that can never be served.
+        """
+        keys = []
+        for p in self.root.rglob("*"):
+            try:
+                target = p.resolve()
+                if target.is_file() and target.is_relative_to(self._root_resolved):
+                    keys.append(str(p.relative_to(self.root)))
+            except OSError:
+                continue  # broken/circular symlink => not a served key
+        return sorted(keys)
 
     def set_latency(self, latency: LatencyDist) -> None:
         self.latency = latency

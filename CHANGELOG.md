@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-06-18
+
+### Fixed
+- `files()` / `describe()["n_files"]` over-counted symlinks whose target escapes the
+  served root — they were listed but 404 on GET, since aiohttp (and `_target_size`)
+  serve a key only when its resolved real path is a file inside the root. `files()` now
+  applies that same resolve-then-in-root rule, so the index matches what is actually
+  served. Documented the root-containment rule in the README.
+
 ## [0.1.0] - 2026-06-18
 
 Initial public release.
@@ -26,4 +35,5 @@ Initial public release.
 - `snailmail` CLI with a `--dist` selector and explicit per-distribution flags, a
   `--json` machine-readable address line (flushed before serving), and `--version`.
 
+[0.1.1]: https://github.com/ianhi/snailmail/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ianhi/snailmail/releases/tag/v0.1.0
