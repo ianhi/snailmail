@@ -34,10 +34,26 @@ keys like `chunks/0.0.0`.
 
 A key is served iff its resolved real path is a file **inside** the root. Symlinks are
 followed, but a symlink whose target escapes the root is not served (it 404s) and is
-not listed by `files()` or counted in `n_files` — index and serving agree. To benchmark
-a large fixture without copying it, **hardlink** it into the served dir (same
-filesystem) or just point `root` at the directory that already contains it; a symlink
-pointing outside the root won't work.
+not listed by `files()` or counted in `n_files` — index and serving agree.
+
+### Serving a single file
+
+To benchmark one file, use `LatencyRangeServer.from_file(path)` — it serves that file
+directly (reachable at its basename), with no directory, no temp dir, and **no copy**,
+so a multi-hundred-MB fixture costs nothing to set up:
+
+```python
+from snailmail import LatencyRangeServer, LogNormal
+
+with LatencyRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
+    open_and_read(server.url("CMU-1.tiff"))   # server.files() == ["CMU-1.tiff"]
+    print(server.stats())
+```
+
+It's the same server with one key: `describe()`, `files()`, `url()`, and `stats()`
+behave exactly as in directory mode. The file is streamed from disk via the same
+machinery, and since only that one path is ever served, there's no traversal surface —
+every other key 404s.
 
 ```python
 from snailmail import LatencyRangeServer, LogNormal
