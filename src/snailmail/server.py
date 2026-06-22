@@ -43,11 +43,16 @@ from snailmail.latency import Fixed, LatencyDist
 class LatencyRangeServer:
     """Threaded localhost HTTP server: aiohttp Range serving of a directory + latency.
 
+    Serve a **directory** with the constructor, or a **single file** with
+    :meth:`from_file`. The two share one observable surface — same :meth:`describe`
+    keys, :meth:`files`, :meth:`url`, and :meth:`stats` semantics — so a consumer
+    never branches on which one it's talking to; single-file is just a one-key server.
+
     Parameters
     ----------
     root:        directory to serve. Every file beneath it is reachable at its path
-                 relative to the root (range- and traversal-safe). To benchmark a
-                 single file, put it in a directory and serve that.
+                 relative to the root (range- and traversal-safe). To serve a lone
+                 file without a containing directory, use :meth:`from_file`.
     latency:     per-request latency distribution (a :class:`~snailmail.latency.LatencyDist`,
                  e.g. ``LogNormal(mode_ms=45)``); ``None`` injects no latency. Mutable
                  via :meth:`set_latency`.
@@ -68,6 +73,47 @@ class LatencyRangeServer:
         if not self.root.is_dir():
             raise NotADirectoryError(f"root must be a directory: {self.root}")
         self._root_resolved = self.root.resolve()
+        self._file: Path | None = None  # directory mode
+        self._key: str | None = None
+        self._init_common(latency=latency, bandwidth_mbs=bandwidth_mbs, port=port)
+
+    @classmethod
+    def from_file(
+        cls,
+        path,
+        *,
+        latency: LatencyDist | None = None,
+        bandwidth_mbs: float | None = None,
+        port: int = 0,
+    ) -> "LatencyRangeServer":
+        """Serve a single file directly, reachable at its basename.
+
+        The file is streamed straight from disk by aiohttp's ``FileResponse`` — the
+        same machinery ``add_static`` delegates each file to — so Range/206/416/
+        conditional handling is identical to directory mode, with **no temp dir, no
+        symlink, and no copy**. Because the served path is one fixed, pre-resolved
+        absolute path (the request path is never joined to the filesystem), there is
+        no path-traversal surface at all: every key but the file's own basename 404s.
+
+        The result is observationally a one-file directory server: ``files()`` is
+        ``[basename]``, ``describe()["n_files"]`` is 1, and ``url(basename)`` addresses
+        it — the same dict shapes the constructor produces.
+        """
+        src = Path(path)
+        if not src.is_file():
+            raise FileNotFoundError(f"file not found: {src}")
+        self = cls.__new__(cls)
+        self._file = src.resolve()
+        self._key = self._file.name
+        self.root = self._file  # a label for describe(); never add_static'd
+        self._root_resolved = self._file
+        self._init_common(latency=latency, bandwidth_mbs=bandwidth_mbs, port=port)
+        return self
+
+    def _init_common(
+        self, *, latency: LatencyDist | None, bandwidth_mbs: float | None, port: int
+    ) -> None:
+        """Shared init for both constructors (everything but the root/file wiring)."""
         self.latency = latency if latency is not None else Fixed(0.0)
         self.set_bandwidth_mbs(bandwidth_mbs)
         self._req_port = port
@@ -99,6 +145,15 @@ class LatencyRangeServer:
         """
         if path in self._size_cache:
             return self._size_cache[path]
+        if self._file is not None:  # single-file mode: only the one key exists
+            if path.lstrip("/") != self._key:
+                return None
+            try:
+                size = self._file.stat().st_size
+            except OSError:
+                return None
+            self._size_cache[path] = size
+            return size
         try:
             target = (self.root / path.lstrip("/")).resolve()
             if not target.is_relative_to(self._root_resolved) or not target.is_file():
@@ -155,9 +210,22 @@ class LatencyRangeServer:
 
     async def _start(self):
         app = web.Application(middlewares=[self._middleware()])
-        # follow_symlinks=False (the default) keeps serving inside the root, matching
-        # the traversal check in _target_size.
-        app.router.add_static("/", self.root, follow_symlinks=False)
+        if self._file is not None:
+            # Single-file mode: one route serving one pinned absolute path via
+            # FileResponse (the class add_static uses per file). add_get registers HEAD
+            # too (allow_head defaults True). Any other key falls through to aiohttp's
+            # 404, which the middleware still counts as a miss. No path is joined to the
+            # filesystem, so there is no traversal surface.
+            file_path = self._file
+
+            async def serve_one(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(file_path)
+
+            app.router.add_get(f"/{self._key}", serve_one)
+        else:
+            # follow_symlinks=False (the default) keeps serving inside the root, matching
+            # the traversal check in _target_size.
+            app.router.add_static("/", self.root, follow_symlinks=False)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self._req_port)
@@ -206,6 +274,8 @@ class LatencyRangeServer:
         ``_target_size``) must not be listed here or ``n_files`` would over-count
         keys that can never be served.
         """
+        if self._key is not None:  # single-file mode: the one served key
+            return [self._key]
         keys = []
         for p in self.root.rglob("*"):
             try:

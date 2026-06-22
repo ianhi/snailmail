@@ -105,6 +105,71 @@ def test_url_builds_key_under_base(datadir):
 
 
 # ---------------------------------------------------------------------------
+# 2a. from_file(): single-file mode shares the directory-mode surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def onefile(tmp_path):
+    """A lone file living outside any served directory, with a sibling that must
+    never be served (proving from_file pins exactly one path)."""
+    data = os.urandom(4096)
+    f = tmp_path / "slide.tiff"
+    f.write_bytes(data)
+    (tmp_path / "SECRET.txt").write_bytes(b"do not serve me")
+    return f, data
+
+
+def test_from_file_range_and_full_get(onefile):
+    f, data = onefile
+    with LatencyRangeServer.from_file(f) as s:
+        assert _get(s.url("slide.tiff"), start=100, length=200) == (206, data[100:300])
+        assert _get(s.url("slide.tiff")) == (200, data)
+        assert _head(s.url("slide.tiff")) == 200
+
+
+def test_from_file_surface_matches_dir_mode(onefile):
+    f, _ = onefile
+    with LatencyRangeServer.from_file(f) as s:
+        assert s.files() == ["slide.tiff"]
+        d = s.describe()
+        assert d["n_files"] == 1
+        # Identical dict shape to dir mode — no resurrected url/file/size_bytes keys.
+        assert set(d) == {"root", "base", "n_files", "port", "latency", "bandwidth_mbs"}
+        assert "url" not in d and "file" not in d and "size_bytes" not in d
+
+
+def test_from_file_only_serves_the_one_key(onefile):
+    f, _ = onefile
+    with LatencyRangeServer.from_file(f) as s:
+        s.reset_counts()
+        # The sibling and any other key 404 and count as misses; no traversal surface.
+        assert _get_status(s.base + "SECRET.txt") == (404, b"")
+        assert _get_status(s.base + "../SECRET.txt")[0] in (400, 403, 404)
+        assert b"do not serve" not in _get_status(s.base + "../SECRET.txt")[1]
+        assert s.stats()["n_misses"] >= 1
+
+
+def test_from_file_hit_not_counted_as_miss(onefile):
+    f, _ = onefile
+    with LatencyRangeServer.from_file(f) as s:
+        s.reset_counts()
+        assert _get(s.url("slide.tiff"))[0] == 200
+        assert s.stats()["n_misses"] == 0
+
+
+def test_from_file_missing_path_errors():
+    with pytest.raises(FileNotFoundError):
+        LatencyRangeServer.from_file("/no/such/file.bin")
+
+
+def test_constructor_still_rejects_a_file(onefile):
+    f, _ = onefile
+    with pytest.raises(NotADirectoryError):
+        LatencyRangeServer(f)
+
+
+# ---------------------------------------------------------------------------
 # 2b. files()/n_files mirror what aiohttp actually serves (symlink consistency)
 # ---------------------------------------------------------------------------
 

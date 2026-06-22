@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-18
+
+### Added
+- `LatencyRangeServer.from_file(path, ...)`: serve a single file directly, reachable at
+  its basename, with no containing directory, no temp dir, no symlink, and no copy — so
+  a large fixture costs nothing to set up. It's streamed from disk via aiohttp's
+  `FileResponse` (the same machinery directory mode uses), and because only the one
+  pinned path is ever served there is no path-traversal surface (every other key 404s).
+  The result is observationally a one-key directory server: `describe()`, `files()`,
+  `url()`, and `stats()` behave identically to directory mode.
+
 ## [0.1.1] - 2026-06-18
 
 ### Fixed
@@ -35,5 +46,6 @@ Initial public release.
 - `snailmail` CLI with a `--dist` selector and explicit per-distribution flags, a
   `--json` machine-readable address line (flushed before serving), and `--version`.
 
+[0.2.0]: https://github.com/ianhi/snailmail/releases/tag/v0.2.0
 [0.1.1]: https://github.com/ianhi/snailmail/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ianhi/snailmail/releases/tag/v0.1.0
