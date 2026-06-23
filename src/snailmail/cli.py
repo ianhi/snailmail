@@ -8,7 +8,7 @@ import threading
 from importlib.metadata import version
 
 from snailmail.latency import Exponential, Fixed, LatencyDist, LogNormal, Normal
-from snailmail.server import LatencyRangeServer
+from snailmail.server import HTTPRangeServer
 
 # CLI param -> which --dist owns it. A param set for the wrong dist is a user error,
 # not silently ignored, so the realized latency always matches what was asked for.
@@ -96,7 +96,7 @@ def main() -> None:
 
     latency = _latency_from_args(args, ap)
     try:
-        server = LatencyRangeServer(
+        server = HTTPRangeServer(
             args.root,
             latency=latency,
             bandwidth_mbs=args.bandwidth_mbs,

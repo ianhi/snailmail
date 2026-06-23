@@ -22,9 +22,9 @@ dominated by the knob.
 Consumers must opt into plain HTTP: obstore ``client_options={"allow_http": True}``,
 icechunk ``http_store({"allow_http": "true"})``.
 
-LOCAL loopback only (binds 127.0.0.1). Use in-process via :class:`LatencyRangeServer`
-(exposes counters + live :meth:`~LatencyRangeServer.set_latency` /
-:meth:`~LatencyRangeServer.set_bandwidth_mbs`) or as the ``snailmail`` CLI.
+LOCAL loopback only (binds 127.0.0.1). Use in-process via :class:`HTTPRangeServer`
+(exposes counters + live :meth:`~HTTPRangeServer.set_latency` /
+:meth:`~HTTPRangeServer.set_bandwidth_mbs`) or as the ``snailmail`` CLI.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from snailmail.bandwidth import AsyncSharedPipe
 from snailmail.latency import Fixed, LatencyDist
 
 
-class LatencyRangeServer:
+class HTTPRangeServer:
     """Threaded localhost HTTP server: aiohttp Range serving of a directory + latency.
 
     Serve a **directory** with the constructor, or a **single file** with
@@ -85,7 +85,7 @@ class LatencyRangeServer:
         latency: LatencyDist | None = None,
         bandwidth_mbs: float | None = None,
         port: int = 0,
-    ) -> "LatencyRangeServer":
+    ) -> "HTTPRangeServer":
         """Serve a single file directly, reachable at its basename.
 
         The file is streamed straight from disk by aiohttp's ``FileResponse`` — the
@@ -244,7 +244,7 @@ class LatencyRangeServer:
         self._ready.set()
         self._loop.run_forever()
 
-    def start(self) -> "LatencyRangeServer":
+    def start(self) -> "HTTPRangeServer":
         threading.Thread(target=self._serve, daemon=True).start()
         self._ready.wait()
         if self._startup_exc is not None:
@@ -329,7 +329,7 @@ class LatencyRangeServer:
     def realized_percentiles(self) -> dict:
         return self.latency.percentiles()
 
-    def __enter__(self) -> "LatencyRangeServer":
+    def __enter__(self) -> "HTTPRangeServer":
         return self.start()
 
     def __exit__(self, *exc) -> None:

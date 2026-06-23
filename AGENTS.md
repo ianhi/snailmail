@@ -18,13 +18,15 @@ last one is the whole point. Wall-clock can't distinguish "fast because cached" 
 src/snailmail/
   __init__.py     # public exports
   latency.py      # LatencyDist + LogNormal / Normal / Exponential / Fixed
-  bandwidth.py    # AsyncSharedPipe
-  server.py       # LatencyRangeServer (the threaded aiohttp wrapper)
+  bandwidth.py    # AsyncSharedPipe (async) + SharedPipe (sync twin)
+  server.py       # HTTPRangeServer (the threaded aiohttp wrapper)
+  s3.py           # ObjectStore + StoreBehavior + LatencyMiddleware (moto-backed S3, [s3] extra)
   cli.py          # the `snailmail` CLI (main, --dist arg wiring)
 tests/
   test_server.py     # range correctness, latency, bandwidth, concurrency, counters
   test_directory.py  # directory serving, misses, traversal, stats, set_latency, --version
   test_latency.py    # distributions + CLI --dist wiring
+  test_s3.py         # object store: middleware unit tests, moto + icechunk integration
 ```
 
 One file per concern; keep each small and single-purpose. The split is to stay
@@ -98,7 +100,7 @@ Pre-commit hooks (ruff lint + ruff format + mypy + file hygiene) run via
 
 - **Compose aiohttp, don't subclass it.** aiohttp has no server base class meant for
   extension (its docs steer you to middlewares/signals over subclassing
-  `web.Application`). `LatencyRangeServer` is a threaded lifecycle + counters facade
+  `web.Application`). `HTTPRangeServer` is a threaded lifecycle + counters facade
   around `web.Application` + `AppRunner`/`TCPSite`; keep it that way. The one private
   touch is reading the bound ephemeral port off `site._server.sockets` — aiohttp
   exposes no public API for it.
@@ -113,6 +115,21 @@ Pre-commit hooks (ruff lint + ruff format + mypy + file hygiene) run via
   kernel-level RTT/bandwidth use `tc netem` (Linux) or `dnctl`/`pfctl` (macOS) in
   front of any file server. Don't grow snailmail toward packet shaping.
 - **A general-purpose web server.** It serves a directory on loopback for benchmarks.
+
+## Releasing
+
+The version is **derived from the git tag** (hatch-vcs) — the tag *is* the version — and
+PyPI publishing fires on a **published GitHub Release**, not on a bare tag push.
+
+1. Green check: `uv run pytest`, `uv run ruff check`, `uv run --extra s3 mypy`.
+2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`. Pre-1.0, a minor bump may
+   include breaking changes.
+3. Commit the specific files (no `git add -A`; **no co-author/tool trailer**). Releases
+   are cut from `main`.
+4. Tag `vX.Y.Z` on that commit and push the commit + tag.
+5. `gh release create vX.Y.Z --title vX.Y.Z --notes "..."` — this triggers
+   `.github/workflows/release.yml` → Trusted Publishing (OIDC) to PyPI. The workflow
+   refuses any dev/local version, so the tag commit must be clean.
 
 ## Working notes
 

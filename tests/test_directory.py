@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from snailmail import Exponential, Fixed, LatencyRangeServer, LogNormal, Normal
+from snailmail import Exponential, Fixed, HTTPRangeServer, LogNormal, Normal
 from snailmail.cli import _parser
 
 
@@ -69,7 +69,7 @@ def datadir(tmp_path):
 def test_dir_range_request(datadir):
     root, files = datadir
     raw = files["chunks/0.0.0"]
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         url = s.base + "chunks/0.0.0"
         status, body = _get(url, start=100, length=200)
         assert status == 206
@@ -79,7 +79,7 @@ def test_dir_range_request(datadir):
 def test_dir_full_get(datadir):
     root, files = datadir
     raw = files["meta/zarr.json"]
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         url = s.base + "meta/zarr.json"
         status, body = _get(url)
         assert status == 200
@@ -93,13 +93,13 @@ def test_dir_full_get(datadir):
 
 def test_files_returns_sorted_keys(datadir):
     root, files = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         assert s.files() == sorted(files.keys())
 
 
 def test_url_builds_key_under_base(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         assert s.url("chunks/0.0.0") == s.base + "chunks/0.0.0"
         assert s.url("/chunks/0.0.0") == s.base + "chunks/0.0.0"  # leading slash stripped
 
@@ -122,7 +122,7 @@ def onefile(tmp_path):
 
 def test_from_file_range_and_full_get(onefile):
     f, data = onefile
-    with LatencyRangeServer.from_file(f) as s:
+    with HTTPRangeServer.from_file(f) as s:
         assert _get(s.url("slide.tiff"), start=100, length=200) == (206, data[100:300])
         assert _get(s.url("slide.tiff")) == (200, data)
         assert _head(s.url("slide.tiff")) == 200
@@ -130,7 +130,7 @@ def test_from_file_range_and_full_get(onefile):
 
 def test_from_file_surface_matches_dir_mode(onefile):
     f, _ = onefile
-    with LatencyRangeServer.from_file(f) as s:
+    with HTTPRangeServer.from_file(f) as s:
         assert s.files() == ["slide.tiff"]
         d = s.describe()
         assert d["n_files"] == 1
@@ -141,7 +141,7 @@ def test_from_file_surface_matches_dir_mode(onefile):
 
 def test_from_file_only_serves_the_one_key(onefile):
     f, _ = onefile
-    with LatencyRangeServer.from_file(f) as s:
+    with HTTPRangeServer.from_file(f) as s:
         s.reset_counts()
         # The sibling and any other key 404 and count as misses; no traversal surface.
         assert _get_status(s.base + "SECRET.txt") == (404, b"")
@@ -152,7 +152,7 @@ def test_from_file_only_serves_the_one_key(onefile):
 
 def test_from_file_hit_not_counted_as_miss(onefile):
     f, _ = onefile
-    with LatencyRangeServer.from_file(f) as s:
+    with HTTPRangeServer.from_file(f) as s:
         s.reset_counts()
         assert _get(s.url("slide.tiff"))[0] == 200
         assert s.stats()["n_misses"] == 0
@@ -160,13 +160,13 @@ def test_from_file_hit_not_counted_as_miss(onefile):
 
 def test_from_file_missing_path_errors():
     with pytest.raises(FileNotFoundError):
-        LatencyRangeServer.from_file("/no/such/file.bin")
+        HTTPRangeServer.from_file("/no/such/file.bin")
 
 
 def test_constructor_still_rejects_a_file(onefile):
     f, _ = onefile
     with pytest.raises(NotADirectoryError):
-        LatencyRangeServer(f)
+        HTTPRangeServer(f)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ def test_symlink_target_inside_root_is_listed_and_served(tmp_path):
     real = tmp_path / "real.bin"
     real.write_bytes(b"a" * 256)
     os.symlink(real, tmp_path / "link.bin")
-    with LatencyRangeServer(tmp_path) as s:
+    with HTTPRangeServer(tmp_path) as s:
         assert s.files() == ["link.bin", "real.bin"]
         status, body = _get(s.url("link.bin"))
         assert status == 200 and body == b"a" * 256
@@ -195,7 +195,7 @@ def test_symlink_target_outside_root_not_listed_and_404s(tmp_path):
     served = tmp_path / "served"
     served.mkdir()
     os.symlink(real, served / "big.bin")
-    with LatencyRangeServer(served) as s:
+    with HTTPRangeServer(served) as s:
         assert s.files() == []
         assert s.describe()["n_files"] == 0
         assert s._target_size("/big.bin") is None
@@ -210,7 +210,7 @@ def test_symlink_target_outside_root_not_listed_and_404s(tmp_path):
 
 def test_dir_missing_key_increments_misses(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         s.reset_counts()
         status, _ = _get_status(s.base + "does_not_exist.bin")
         assert status == 404
@@ -219,7 +219,7 @@ def test_dir_missing_key_increments_misses(datadir):
 
 def test_hit_does_not_increment_misses(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         s.reset_counts()
         status, _ = _get(s.url("chunks/0.0.0"))
         assert status == 200
@@ -233,7 +233,7 @@ def test_hit_does_not_increment_misses(datadir):
 
 def test_path_traversal_blocked(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         # These paths all try to escape the served root — server must return 4xx
         traversal_urls = [
             s.base + "../../etc/passwd",
@@ -255,7 +255,7 @@ def test_path_traversal_blocked(datadir):
 
 def test_total_bytes_sums_ranges(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         s.reset_counts()
         _get(s.base + "chunks/0.0.0", start=0, length=100)
         _get(s.base + "chunks/0.0.1", start=50, length=200)
@@ -264,7 +264,7 @@ def test_total_bytes_sums_ranges(datadir):
 
 def test_head_does_not_inflate_total_bytes(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         s.reset_counts()
         _head(s.base + "chunks/0.0.0")
         assert s.stats()["total_bytes"] == 0
@@ -277,7 +277,7 @@ def test_head_does_not_inflate_total_bytes(datadir):
 
 def test_stats_methods_and_paths(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         s.reset_counts()
         _get(s.base + "chunks/0.0.0")
         _get(s.base + "chunks/0.0.0")
@@ -296,7 +296,7 @@ def test_stats_methods_and_paths(datadir):
 
 def test_describe_dir_keys(datadir):
     root, files = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         d = s.describe()
         assert "root" in d
         assert "base" in d
@@ -318,7 +318,7 @@ def test_describe_dir_keys(datadir):
 
 def test_set_latency_live_swap(datadir):
     root, _ = datadir
-    with LatencyRangeServer(root, latency=Fixed(0)) as s:
+    with HTTPRangeServer(root, latency=Fixed(0)) as s:
         s.set_latency(Fixed(40))
         t = time.perf_counter()
         _get(s.url("chunks/0.0.0"), 0, 100)
@@ -373,7 +373,7 @@ def test_degenerate_flag_and_pool_size(dist, is_degenerate):
 @pytest.mark.parametrize("bad_range", ["bytes=bad", "bytes=abc-def", "bytes=-"])
 def test_malformed_range_does_not_500(datadir, bad_range):
     root, _ = datadir
-    with LatencyRangeServer(root) as s:
+    with HTTPRangeServer(root) as s:
         status, _ = _get_status(s.url("chunks/0.0.0"), headers={"Range": bad_range})
         assert status != 500
 

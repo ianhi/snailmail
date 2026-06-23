@@ -26,6 +26,11 @@ dependencies = [
     "numpy>=1.24",
 ]
 
+[project.optional-dependencies]
+# ObjectStore wraps moto's in-process S3 server (which pulls flask/werkzeug). The upper
+# bound is intentional: it wraps moto's server internals, so a major bump may need a look.
+s3 = ["moto[s3,server]>=5,<6"]
+
 [project.scripts]
 snailmail = "snailmail.cli:main"
 
@@ -59,3 +64,9 @@ line-length = 100
 [tool.mypy]
 files = ["src/snailmail"]
 python_version = "3.10"
+
+# Optional runtime deps (only imported lazily inside ObjectStore); not installed
+# in the base/type-check env.
+[[tool.mypy.overrides]]
+module = ["moto.*", "werkzeug.*", "icechunk.*", "botocore.*"]
+ignore_missing_imports = true

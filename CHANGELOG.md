@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-22
+
+### Added
+- `ObjectStore`: a local, in-process S3-compatible object store (backed by **moto**) with
+  the same injectable latency/bandwidth model as the range server — for benchmarking the
+  **metadata** round-trips of a consumer like Icechunk (config/refs/snapshots/manifests),
+  which are free and invisible on a local filesystem. Optional `[s3]` extra. Latency is
+  optional, so `ObjectStore()` is also just a plain local S3 store. `icechunk_storage()`
+  returns a ready-wired `icechunk.Storage`; `stats()` splits cost into `metadata_requests`
+  vs `data_requests` with per-repo-component byte counts. Storage is in-memory and ephemeral.
+- `StoreBehavior` for emulating store quirks. `conditional_writes="enforce"|"reject"|"ignore"`
+  models how a store treats S3 conditional writes — `"reject"` returns `NotImplemented`
+  like JASMIN, making the failure in [icechunk#2228](https://github.com/earth-mover/icechunk/issues/2228)
+  reproducible locally with no cloud credentials (see `repros/icechunk_2228.py`).
+- `LatencyMiddleware` (the generic WSGI middleware under `ObjectStore`) and `SharedPipe`
+  (the synchronous twin of `AsyncSharedPipe`).
+
+### Changed
+- Renamed `LatencyRangeServer` to `HTTPRangeServer`. No back-compat alias (pre-1.0). Both
+  servers now share the same shape: optional `latency=`/`bandwidth_mbs=` wire shaping, with
+  store-specific quirks under `behavior=`.
+
 ## [0.2.0] - 2026-06-18
 
 ### Added

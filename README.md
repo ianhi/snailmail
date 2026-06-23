@@ -38,14 +38,14 @@ not listed by `files()` or counted in `n_files` — index and serving agree.
 
 ### Serving a single file
 
-To benchmark one file, use `LatencyRangeServer.from_file(path)` — it serves that file
+To benchmark one file, use `HTTPRangeServer.from_file(path)` — it serves that file
 directly (reachable at its basename), with no directory, no temp dir, and **no copy**,
 so a multi-hundred-MB fixture costs nothing to set up:
 
 ```python
-from snailmail import LatencyRangeServer, LogNormal
+from snailmail import HTTPRangeServer, LogNormal
 
-with LatencyRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
+with HTTPRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
     open_and_read(server.url("CMU-1.tiff"))   # server.files() == ["CMU-1.tiff"]
     print(server.stats())
 ```
@@ -56,9 +56,9 @@ machinery, and since only that one path is ever served, there's no traversal sur
 every other key 404s.
 
 ```python
-from snailmail import LatencyRangeServer, LogNormal
+from snailmail import HTTPRangeServer, LogNormal
 
-with LatencyRangeServer("my_zarr_store/", latency=LogNormal(mode_ms=40), bandwidth_mbs=100) as server:
+with HTTPRangeServer("my_zarr_store/", latency=LogNormal(mode_ms=40), bandwidth_mbs=100) as server:
     server.reset_counts()
     open_and_read(server.base)         # your reader: obstore, icechunk, zarr, ...
     print(server.stats())
@@ -74,7 +74,7 @@ direct request looks like this:
 ```python
 import urllib.request
 
-with LatencyRangeServer("my_zarr_store/") as server:
+with HTTPRangeServer("my_zarr_store/") as server:
     req = urllib.request.Request(server.url("chunks/0.0.0"), headers={"Range": "bytes=0-1023"})
     first_kib = urllib.request.urlopen(req).read()
 ```
@@ -116,6 +116,92 @@ so a script can spawn snailmail, read the bound address from stdout, and proceed
 
 The CLI rejects a flag that doesn't belong to the chosen `--dist`. Omit `--dist`
 for no injected latency.
+
+## Object storage (Icechunk metadata)
+
+The range server above models reading chunk **data**. But a tool like
+[Icechunk](https://icechunk.io) also reads and writes **metadata** — config, refs,
+snapshots, manifests — from an object store. Put that metadata on local disk and those
+reads are *free*: once your data reads are tuned down to ~1 request, the metadata
+round-trips that now dominate are invisible, and you can't compare against the cloud
+honestly.
+
+`ObjectStore` closes that gap. It's a real S3-compatible object store —
+[moto](https://github.com/getmoto/moto) running in-process, so list/get/put/delete and
+conditional writes all behave like S3 — wrapped in the **same** per-request latency and
+bandwidth model as the range server (see [What it models](#what-it-models)). Metadata
+operations pay realistic RTT, and it counts them, split by repo component, so you can read
+off the metadata cost of an open or read separately from the data cost.
+
+It's a store first: latency is **optional** wire shaping. Omit it and `ObjectStore()` is
+just a plain local S3 store (still counted); add `latency=`/`bandwidth_mbs=` to shape the
+wire. It needs the `s3` extra (which pulls in moto):
+
+```bash
+uv add 'snailmail[s3]'        # or: pip install 'snailmail[s3]'
+```
+
+Point Icechunk at it with `icechunk_storage()`, which returns a ready-wired
+`icechunk.Storage` (path-style, plain HTTP, dummy credentials):
+
+```python
+import icechunk
+from snailmail import ObjectStore, LogNormal
+
+with ObjectStore(latency=LogNormal(mode_ms=45)) as store:
+    repo = icechunk.Repository.open(store.icechunk_storage(prefix="my-repo"))
+    read_an_array(repo)        # the reopen + read you're benchmarking
+
+    print(store.stats())
+    # {'n_requests': 6, 'n_misses': 2, 'metadata_requests': 4, 'data_requests': 0,
+    #  'ops': {'GET': 6}, 'max_in_flight': 3, 'bytes_down': 2427, 'bytes_up': 0,
+    #  'prefixes': {'config': 1, 'refs': 1, 'snapshots': 1, 'manifests': 1, 'other': 2},
+    #  'prefix_bytes': {'config': 323, 'refs': 337, 'snapshots': 604, 'manifests': 355},
+    #  'conditional_stripped': 0, 'conditional_rejected': 0}
+```
+
+`metadata_requests` (config/refs/snapshots/manifests/transactions) and `data_requests`
+(chunks) split the cost the way a benchmark wants it; `prefixes` and `prefix_bytes` give
+the per-component breakdown. As with the range server, tune between measurements with
+`set_latency(dist)`, `set_bandwidth_mbs(x)`, and `reset_counts()`, and read the endpoint
+from `store.endpoint_url` if you're driving it with another S3 client (e.g. `obstore` or
+`boto3`). The store is in-process and ephemeral — objects live in memory (moto spools any
+object over ~5 MB to a temp file) and vanish on exit. Per-request access logging is off by
+default; pass `quiet=False` to see every S3 request on stderr.
+
+### Emulating store quirks (conditional writes)
+
+Real object stores differ in which S3 features they implement, and those differences
+change how a tool like Icechunk must be configured. `ObjectStore` emulates such quirks via
+a `StoreBehavior` — grouped so the API stays stable as more quirks are added.
+
+The first quirk is **conditional writes** (`If-None-Match` / `If-Match`, which Icechunk
+uses to make ref creation and commits atomic). Not every store implements them — JASMIN's,
+for instance, rejects them. `StoreBehavior(conditional_writes=...)` models each behavior
+locally, with no cloud credentials:
+
+| `conditional_writes` | Models a store that… | A conditional write… |
+|---|---|---|
+| `"enforce"` *(default)* | supports them (real S3) | is honored (compare-and-swap) |
+| `"reject"` | does **not** implement them (e.g. JASMIN) | is refused with `501 NotImplemented` |
+| `"ignore"` | accepts but silently ignores them | overwrites unconditionally |
+
+```python
+from snailmail import ObjectStore, StoreBehavior
+
+# Behaves like JASMIN: reject conditional writes with NotImplemented.
+with ObjectStore(behavior=StoreBehavior(conditional_writes="reject")) as store:
+    ...
+    print(store.stats()["conditional_rejected"])   # count of writes refused
+```
+
+`"ignore"` is the quieter hazard — the write *succeeds* but loses its atomicity guarantee,
+so it surfaces lost-update bugs; `stats()["conditional_stripped"]` counts those.
+
+This makes otherwise creds-only failures reproducible on a laptop. `repros/icechunk_2228.py`
+is a self-contained reproduction of [icechunk#2228](https://github.com/earth-mover/icechunk/issues/2228)
+(conditional-op settings silently dropped under `spec_version=1`) — run it with
+`uv run repros/icechunk_2228.py`, no JASMIN account required.
 
 ## What it models
 

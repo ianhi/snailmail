@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 
 class AsyncSharedPipe:
@@ -15,9 +17,9 @@ class AsyncSharedPipe:
     """
 
     def __init__(self, bytes_per_s: float | None):
-        self.B = bytes_per_s if bytes_per_s and bytes_per_s > 0 else None
-        self._lock = asyncio.Lock()
-        self._free = 0.0  # loop-clock timestamp the pipe is next free
+        self.B: float | None = bytes_per_s if bytes_per_s and bytes_per_s > 0 else None
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._free: float = 0.0  # loop-clock timestamp the pipe is next free
 
     async def transfer(self, nbytes: int) -> None:
         if self.B is None or nbytes <= 0:
@@ -30,6 +32,36 @@ class AsyncSharedPipe:
         delay = finish - loop.time()
         if delay > 0:
             await asyncio.sleep(delay)
+
+    def reset(self) -> None:
+        self._free = 0.0
+
+
+class SharedPipe:
+    """Synchronous twin of :class:`AsyncSharedPipe` for WSGI (thread-per-request) servers.
+
+    Same model and math as the async pipe — one shared downlink of ``B`` bytes/s, every
+    transfer reserved through a single FIFO so aggregate egress is capped and over-read
+    costs real time — but it blocks the calling thread with ``time.sleep`` instead of
+    awaiting, and guards the cursor with a ``threading.Lock``. Uses ``time.monotonic`` as
+    the clock (the asyncio loop clock has no meaning off the loop). ``B is None`` disables.
+    """
+
+    def __init__(self, bytes_per_s: float | None):
+        self.B: float | None = bytes_per_s if bytes_per_s and bytes_per_s > 0 else None
+        self._lock: threading.Lock = threading.Lock()
+        self._free: float = 0.0  # monotonic timestamp the pipe is next free
+
+    def transfer(self, nbytes: int) -> None:
+        if self.B is None or nbytes <= 0:
+            return
+        with self._lock:
+            start = max(time.monotonic(), self._free)
+            self._free = start + nbytes / self.B
+            finish = self._free
+        delay = finish - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
 
     def reset(self) -> None:
         self._free = 0.0

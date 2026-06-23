@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from snailmail import Fixed, LatencyRangeServer, LogNormal
+from snailmail import Fixed, HTTPRangeServer, LogNormal
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def _get(url, start=None, length=None):
 
 def test_range_correctness(datadir):
     raw = (datadir / "data.bin").read_bytes()
-    with LatencyRangeServer(datadir) as s:
+    with HTTPRangeServer(datadir) as s:
         status, body = _get(s.url("data.bin"), start=1000, length=500)
         assert status == 206
         assert body == raw[1000:1500]
@@ -35,7 +35,7 @@ def test_range_correctness(datadir):
 
 
 def test_latency_applied(datadir):
-    with LatencyRangeServer(datadir, latency=Fixed(40)) as s:
+    with HTTPRangeServer(datadir, latency=Fixed(40)) as s:
         t = time.perf_counter()
         _get(s.url("data.bin"), 0, 100)
         assert time.perf_counter() - t >= 0.035  # ~40ms fixed, minus slack
@@ -43,7 +43,7 @@ def test_latency_applied(datadir):
 
 def test_concurrency_overlaps(datadir):
     # 16 concurrent requests at 50ms each: if serial, ~800ms; concurrent, ~one RTT.
-    with LatencyRangeServer(datadir, latency=Fixed(50)) as s:
+    with HTTPRangeServer(datadir, latency=Fixed(50)) as s:
         s.reset_counts()
         t = time.perf_counter()
         with ThreadPoolExecutor(max_workers=16) as ex:
@@ -55,7 +55,7 @@ def test_concurrency_overlaps(datadir):
 
 
 def test_counters_and_bytes(datadir):
-    with LatencyRangeServer(datadir) as s:
+    with HTTPRangeServer(datadir) as s:
         _get(s.url("data.bin"), 0, 1000)
         _get(s.url("data.bin"), 5000, 2000)
         st = s.stats()
@@ -67,7 +67,7 @@ def test_counters_and_bytes(datadir):
 
 def test_bandwidth_limit(datadir):
     # 1 MB through a 10 MB/s pipe should take ~0.1s of transfer time.
-    with LatencyRangeServer(datadir, bandwidth_mbs=10) as s:
+    with HTTPRangeServer(datadir, bandwidth_mbs=10) as s:
         t = time.perf_counter()
         _get(s.url("data.bin"), 0, 1_000_000)
         assert time.perf_counter() - t >= 0.08
@@ -90,18 +90,18 @@ def test_requires_a_directory(tmp_path):
     f = tmp_path / "afile.bin"
     f.write_bytes(b"x")
     with pytest.raises(NotADirectoryError):
-        LatencyRangeServer(f)
+        HTTPRangeServer(f)
 
 
 def test_startup_failure_propagates(datadir):
     # A bind failure must raise from start(), not hang forever waiting on _ready.
-    with LatencyRangeServer(datadir) as running:
+    with HTTPRangeServer(datadir) as running:
         with pytest.raises(OSError):
-            LatencyRangeServer(datadir, port=running.port).start()
+            HTTPRangeServer(datadir, port=running.port).start()
 
 
 def test_serves_from_disk_not_ram(datadir):
     # The server streams files from disk; it must not slurp them into memory.
-    s = LatencyRangeServer(datadir)
+    s = HTTPRangeServer(datadir)
     assert s.files() == ["data.bin"]
     assert not hasattr(s, "data")
