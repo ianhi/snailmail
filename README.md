@@ -3,21 +3,25 @@
 [![PyPI](https://img.shields.io/pypi/v/snailmail.svg)](https://pypi.org/project/snailmail/)
 [![CI](https://github.com/ianhi/snailmail/actions/workflows/ci.yml/badge.svg)](https://github.com/ianhi/snailmail/actions/workflows/ci.yml)
 
-A local HTTP server that serves a directory over HTTP Range, injecting per-request
-latency and a bandwidth cap, and counts GETs and peak concurrency.
+snailmail gives you a local object store or HTTP server that emulates a slow remote
+server, injecting per-request latency and a bandwidth cap to reproduce the conditions
+of a remote data source and/or a low-throughput wifi connection. Specifically, snailmail
+gives you:
 
-Use it to benchmark range-based readers — object stores, Zarr/Icechunk virtual
-chunks, tiled image formats — under realistic network conditions, on your laptop,
-with no cloud and no root.
+- **Latency distributions, not only fixed numbers** — capture the effect of a slow tail.
+- **Bandwidth limiting** — model a bad wifi connection.
 
-## Why you'd want it
+This lets you develop for remote use cases entirely on your laptop. Local development
+normally hides the cost that dominates remote reads: network round-trips.
 
-Local disk hides the cost that dominates remote reads: network round-trips.
-A read pattern that finishes instantly against a warm page cache can take
-minutes of serial round-trips against object storage. snailmail adds a
-per-request latency draw and a shared bandwidth pipe so you can measure how a
-reader behaves over the wire. `max_in_flight` tells you peak concurrency, which
-wall-clock time alone cannot.
+There are two interfaces, each with tunable latency, bandwidth, and quirks (like
+disallowing conditional puts):
+
+- **`HTTPRangeServer`** serves a directory over HTTP Range — for chunk **data** reads
+  (Zarr/Icechunk virtual chunks, tiled image formats, object-store GETs).
+- **`ObjectStore`** is an in-process, S3-compatible store — for the object/**metadata**
+  reads a tool like [Icechunk](https://icechunk.io) makes *around* the data (config,
+  refs, snapshots, manifests).
 
 ## Install
 
