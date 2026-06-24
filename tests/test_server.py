@@ -105,3 +105,79 @@ def test_serves_from_disk_not_ram(datadir):
     s = HTTPRangeServer(datadir)
     assert s.files() == ["data.bin"]
     assert not hasattr(s, "data")
+
+
+# -- per-request records / report (HTTPRangeServer) --
+
+
+def test_report_and_records(datadir):
+    raw = (datadir / "data.bin").read_bytes()
+    with HTTPRangeServer(datadir, classify=lambda k: k.split(".")[-1]) as s:
+        _get(s.url("data.bin"))  # full GET -> 200
+        _get(s.url("data.bin"), 0, 500)  # partial GET -> 206
+        try:
+            _get(s.url("missing.bin"))  # -> 404
+        except Exception:
+            pass
+
+        rep = s.report()
+        assert rep["n_requests"] == 3
+        assert rep["n_misses"] == 1
+        assert rep["by_status"] == {200: 1, 206: 1, 404: 1}
+        assert rep["by_label"]["bin"]["requests"] == 3  # all keys end in .bin
+        assert rep["records_truncated"] is False
+
+        recs = s.requests
+        assert [r.status for r in recs] == [200, 206, 404]
+        full, partial, miss = recs
+        assert full.range is None and full.nbytes == len(raw)
+        assert partial.range == (0, 500) and partial.nbytes == 500
+        assert miss.status == 404 and miss.nbytes == 0
+        assert all(r.label == "bin" for r in recs)
+
+
+def test_unsatisfiable_range_recorded_as_416(datadir):
+    # A well-formed range past EOF (and any range on an empty file) is unsatisfiable:
+    # aiohttp answers 416, and the record's status must match the wire, not 206.
+    (datadir / "empty.bin").write_bytes(b"")
+    with HTTPRangeServer(datadir) as s:
+        for key, rng in [("data.bin", "bytes=9000000-9999999"), ("empty.bin", "bytes=0-10")]:
+            req = Request(s.url(key), headers={"Range": rng})
+            try:
+                wire = urlopen(req).status
+            except Exception as exc:  # urllib raises HTTPError on 416
+                wire = getattr(exc, "code", None)
+            assert wire == 416
+        assert [r.status for r in s.requests] == [416, 416]
+        assert all(r.nbytes == 0 and r.range is None for r in s.requests)
+        assert s.report()["by_status"] == {416: 2}
+
+
+def test_reset_clears_records(datadir):
+    with HTTPRangeServer(datadir) as s:
+        _get(s.url("data.bin"))
+        assert len(s.requests) == 1
+        s.reset_counts()
+        assert s.requests == []
+        assert s.report()["n_requests"] == 0
+
+
+def test_max_records_bounds_buffer_but_not_counts(datadir):
+    with HTTPRangeServer(datadir, max_records=2) as s:
+        for _ in range(5):
+            _get(s.url("data.bin"), 0, 10)
+        rep = s.report()
+        assert rep["n_requests"] == 5  # counters exact
+        assert rep["records_kept"] == 2  # buffer capped
+        assert rep["records_truncated"] is True
+        assert len(s.requests) == 2
+
+
+def test_request_log_emits(datadir, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="snailmail.http"):
+        with HTTPRangeServer(datadir) as s:
+            _get(s.url("data.bin"), 0, 100)
+    lines = [r.getMessage() for r in caplog.records if r.name == "snailmail.http"]
+    assert any("GET data.bin" in m and "-> 206" in m for m in lines)

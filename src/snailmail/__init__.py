@@ -5,12 +5,18 @@ conditions. See :class:`HTTPRangeServer` (range/file serving) and :class:`Object
 (S3 object storage).
 """
 
+import logging
 from importlib.metadata import PackageNotFoundError, version
 
-from snailmail.bandwidth import AsyncSharedPipe, SharedPipe
+from snailmail.bandwidth import AsyncSharedPipe, ClientLink, SharedPipe
 from snailmail.latency import Exponential, Fixed, LatencyDist, LogNormal, Normal
+from snailmail.record import RequestRecord
 from snailmail.s3 import LatencyMiddleware, ObjectStore, StoreBehavior
 from snailmail.server import HTTPRangeServer
+
+# Library logging hygiene: attach a no-op handler so per-request lines stay silent until
+# the user opts in (e.g. logging.getLogger("snailmail").setLevel(logging.INFO) + a handler).
+logging.getLogger("snailmail").addHandler(logging.NullHandler())
 
 try:
     __version__ = version("snailmail")  # derived from the git tag at build time (hatch-vcs)
@@ -21,7 +27,9 @@ __all__ = [
     "HTTPRangeServer",
     "ObjectStore",
     "StoreBehavior",
+    "RequestRecord",
     "LatencyMiddleware",
+    "ClientLink",
     "AsyncSharedPipe",
     "SharedPipe",
     "LatencyDist",

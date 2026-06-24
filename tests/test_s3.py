@@ -335,3 +335,141 @@ def test_icechunk_2228_conditional_create_dropped_on_spec_v1():
         with pytest.raises(icechunk.IcechunkError):
             create(s, 1)
         assert s.stats()["conditional_rejected"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# per-request records / report (LatencyMiddleware)
+# ---------------------------------------------------------------------------
+
+
+def test_report_records_and_labels():
+    mw = LatencyMiddleware(_echo_app(response=b"x" * 50), latency=Fixed(0))
+    _drive(mw, "GET", "/bkt/chunks/0.0.0")  # data
+    _drive(mw, "GET", "/bkt/refs/branch.main/ref.json")  # metadata
+    _drive(mw, "PUT", "/bkt/manifests/m1", body=b"y" * 10)  # metadata write
+
+    rep = mw.report()
+    assert rep["n_requests"] == 3
+    # default classify is the icechunk-component split
+    assert rep["by_label"]["chunks"]["requests"] == 1
+    assert rep["by_label"]["refs"]["requests"] == 1
+    assert rep["by_label"]["manifests"]["requests"] == 1
+    assert rep["metadata_requests"] == 2 and rep["data_requests"] == 1
+
+    recs = mw.requests
+    assert [r.op for r in recs] == ["GET", "GET", "PUT"]
+    put = recs[-1]
+    assert put.op == "PUT" and put.conditional is False
+    assert put.nbytes == 10 + 50  # uplink body + echoed downlink body
+
+
+def test_report_request_split_reconciles_with_total():
+    mw = LatencyMiddleware(_echo_app(), latency=Fixed(0))
+    _drive(mw, "GET", "/bkt/chunks/0.0.0")  # data
+    _drive(mw, "GET", "/bkt/refs/r")  # metadata
+    _drive(mw, "GET", "/bkt")  # bucket-level (LIST) -> "other", neither metadata nor data
+    rep = mw.report()
+    assert rep["metadata_requests"] == 1
+    assert rep["data_requests"] == 1
+    assert rep["other_requests"] == 1
+    assert (
+        rep["metadata_requests"] + rep["data_requests"] + rep["other_requests"] == rep["n_requests"]
+    )
+
+
+def test_conditional_flag_recorded():
+    mw = LatencyMiddleware(_echo_app(response=b""), latency=Fixed(0))
+    _drive(mw, "PUT", "/bkt/refs/branch.main/ref.json", headers={"If-None-Match": "*"})
+    assert mw.requests[-1].conditional is True
+
+
+def test_custom_classify_overrides_default():
+    mw = LatencyMiddleware(_echo_app(), latency=Fixed(0), classify=lambda k: "all")
+    _drive(mw, "GET", "/bkt/chunks/0.0.0")
+    _drive(mw, "GET", "/bkt/refs/r")
+    assert mw.report()["by_label"] == {"all": {"requests": 2, "bytes": 22}}
+
+
+def test_max_records_bounds_records_not_counts():
+    mw = LatencyMiddleware(_echo_app(response=b"z"), latency=Fixed(0), max_records=2)
+    for _ in range(5):
+        _drive(mw, "GET", "/bkt/chunks/0.0.0")
+    rep = mw.report()
+    assert rep["n_requests"] == 5
+    assert rep["records_kept"] == 2 and rep["records_truncated"] is True
+
+
+def test_reset_clears_records_s3():
+    mw = LatencyMiddleware(_echo_app(), latency=Fixed(0))
+    _drive(mw, "GET", "/bkt/chunks/0.0.0")
+    mw.reset_counts()
+    assert mw.requests == [] and mw.report()["n_requests"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ClientLink: a shared client uplink/downlink across stores
+# ---------------------------------------------------------------------------
+
+import threading  # noqa: E402
+
+from snailmail import ClientLink  # noqa: E402
+
+
+def test_client_link_realized_caps():
+    c = ClientLink(down_mbs=50, up_mbs=10)
+    assert c.down_mbs == 50 and c.up_mbs == 10
+    assert ClientLink().down_mbs is None  # both directions unlimited by default
+
+
+def _drive_concurrently(mws_and_keys):
+    threads = [threading.Thread(target=_drive, args=(mw, "GET", key)) for mw, key in mws_and_keys]
+    t = time.perf_counter()
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    return time.perf_counter() - t
+
+
+def test_shared_client_link_serializes_concurrent_downloads():
+    body = b"x" * 1_000_000  # 1 MB per response
+
+    def two_stores(c1, c2):
+        return [
+            (
+                LatencyMiddleware(_echo_app(response=body), latency=Fixed(0), client=c1),
+                "/bkt/chunks/a",
+            ),
+            (
+                LatencyMiddleware(_echo_app(response=body), latency=Fixed(0), client=c2),
+                "/bkt/chunks/b",
+            ),
+        ]
+
+    shared = ClientLink(down_mbs=2)  # 2 MB/s
+    t_shared = _drive_concurrently(two_stores(shared, shared))  # 2 MB through one 2 MB/s pipe ~1.0s
+    sep_a, sep_b = ClientLink(down_mbs=2), ClientLink(down_mbs=2)
+    t_separate = _drive_concurrently(two_stores(sep_a, sep_b))  # 1 MB each, in parallel ~0.5s
+
+    # The shared link makes the two stores' downloads contend for one pipe; separate links
+    # let them overlap. So shared should take markedly longer (~2x) than separate.
+    assert t_shared > t_separate * 1.5
+
+
+def test_client_link_meters_uploads():
+    client = ClientLink(up_mbs=1)  # 1 MB/s up
+    mw = LatencyMiddleware(_echo_app(response=b""), latency=Fixed(0), client=client)
+    t = time.perf_counter()
+    _drive(mw, "PUT", "/bkt/manifests/m", body=b"y" * 500_000)  # 0.5 MB up
+    assert time.perf_counter() - t >= 0.4
+
+
+def test_per_store_reset_leaves_shared_link_untouched():
+    client = ClientLink(down_mbs=1)
+    mw = LatencyMiddleware(_echo_app(), latency=Fixed(0), client=client)
+    client.down.transfer(1_000_000)  # advance the shared cursor
+    advanced = client.down._free
+    mw.reset_counts()  # a store reset must NOT rewind the shared link
+    assert client.down._free == advanced
+    client.reset()  # explicit link reset does
+    assert client.down._free == 0.0

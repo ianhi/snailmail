@@ -31,13 +31,16 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 from aiohttp import web
 
 from snailmail.bandwidth import AsyncSharedPipe
 from snailmail.latency import Fixed, LatencyDist
+from snailmail.record import PendingRecord, RequestLog, RequestRecord, identity
 
 
 class HTTPRangeServer:
@@ -59,6 +62,28 @@ class HTTPRangeServer:
     bandwidth_mbs:  shared-pipe bandwidth, MB/s (1 MB = 1e6 bytes); None = unlimited.
     port:        TCP port to bind (0 = ephemeral; set a fixed port when a consumer
                  mishandles ephemeral ports).
+    classify:    ``key -> label`` grouping for :meth:`report`'s ``by_label`` breakdown.
+                 Default labels each key as itself (per-key counts); pass a coarser
+                 function (e.g. ``lambda k: k.split("/")[0]`` to group by top-level
+                 directory) to roll related keys up however your benchmark needs.
+    max_records: cap on retained per-request records for :attr:`requests` drill-down
+                 (a bounded ring buffer; ``None`` = unbounded, ``0`` = counts only). The :meth:`report` and
+                 :meth:`stats` counts stay exact regardless — only the record list is
+                 capped, and :meth:`report` flags ``records_truncated`` when it rolls.
+
+    Observability
+    -------------
+    Three complementary views of traffic since the last :meth:`reset_counts`:
+
+    * :meth:`stats` — flat counters (GETs, bytes, peak concurrency, raw paths/methods).
+    * :meth:`report` — a high-level summary dict: totals plus ``by_label`` / ``by_status``
+      breakdowns. JSON-serializable; the headline for "what did my reader do?".
+    * :attr:`requests` — the recent :class:`~snailmail.record.RequestRecord` objects to
+      drill into individual requests (status, bytes, byte range, injected RTT, duration).
+
+    A per-request line is also emitted to the stdlib ``snailmail.http`` logger at INFO
+    (off until you add a handler / raise the level), so live tracing is standard
+    ``logging`` config, not a bespoke switch.
     """
 
     def __init__(
@@ -68,6 +93,8 @@ class HTTPRangeServer:
         latency: LatencyDist | None = None,
         bandwidth_mbs: float | None = None,
         port: int = 0,
+        classify: Callable[[str], str] = identity,
+        max_records: int | None = 100_000,
     ):
         self.root = Path(root)
         if not self.root.is_dir():
@@ -75,7 +102,13 @@ class HTTPRangeServer:
         self._root_resolved = self.root.resolve()
         self._file: Path | None = None  # directory mode
         self._key: str | None = None
-        self._init_common(latency=latency, bandwidth_mbs=bandwidth_mbs, port=port)
+        self._init_common(
+            latency=latency,
+            bandwidth_mbs=bandwidth_mbs,
+            port=port,
+            classify=classify,
+            max_records=max_records,
+        )
 
     @classmethod
     def from_file(
@@ -85,6 +118,8 @@ class HTTPRangeServer:
         latency: LatencyDist | None = None,
         bandwidth_mbs: float | None = None,
         port: int = 0,
+        classify: Callable[[str], str] = identity,
+        max_records: int | None = 100_000,
     ) -> "HTTPRangeServer":
         """Serve a single file directly, reachable at its basename.
 
@@ -107,11 +142,23 @@ class HTTPRangeServer:
         self._key = self._file.name
         self.root = self._file  # a label for describe(); never add_static'd
         self._root_resolved = self._file
-        self._init_common(latency=latency, bandwidth_mbs=bandwidth_mbs, port=port)
+        self._init_common(
+            latency=latency,
+            bandwidth_mbs=bandwidth_mbs,
+            port=port,
+            classify=classify,
+            max_records=max_records,
+        )
         return self
 
     def _init_common(
-        self, *, latency: LatencyDist | None, bandwidth_mbs: float | None, port: int
+        self,
+        *,
+        latency: LatencyDist | None,
+        bandwidth_mbs: float | None,
+        port: int,
+        classify: Callable[[str], str],
+        max_records: int | None,
     ) -> None:
         """Shared init for both constructors (everything but the root/file wiring)."""
         self.latency = latency if latency is not None else Fixed(0.0)
@@ -122,6 +169,9 @@ class HTTPRangeServer:
         self.n_requests = self.n_gets = self.n_misses = 0
         self.methods: Counter[str] = Counter()
         self.paths: Counter[str] = Counter()
+        self._log = RequestLog(
+            classify=classify, max_records=max_records, logger_name="snailmail.http"
+        )
         self._size_cache: dict[str, int] = {}  # loop-thread only, so no lock needed
         self._in_flight = self.max_in_flight = 0
         self._lock = threading.Lock()
@@ -164,18 +214,37 @@ class HTTPRangeServer:
         self._size_cache[path] = size
         return size
 
-    def _range_bytes(self, request: web.Request, size: int) -> int:
-        """Bytes a GET will read against a known file size (pure; no side effects).
+    def _resolve_range(
+        self, request: web.Request, size: int
+    ) -> tuple[int, int, tuple[int, int] | None]:
+        """Resolve a GET against a known file size in a single parse of the Range header.
 
-        Uses aiohttp's own ``request.http_range`` parser so this count matches what the
-        static handler actually serves; a malformed Range raises ValueError there and
-        aiohttp answers 416 (no body), so we count 0.
+        Returns ``(status, nbytes, range)``: the status aiohttp will send (200 whole / 206
+        partial / 416 unsatisfiable — ``FileResponse`` defers this to send time, so we
+        derive it here from aiohttp's own ``http_range`` parser), the body bytes that will
+        be served, and the ``[start, stop)`` range (``None`` for a whole-object read).
+
+        Scope: this derivation assumes the ``Range`` is honored as written, which covers
+        the range/full/unsatisfiable GETs that object-store and chunk readers actually
+        issue. It does **not** evaluate conditional precondition headers — an ``If-Range``
+        that fails (or an ``If-*`` that yields 304) makes aiohttp send a different status
+        than derived here. Those headers aren't used by the readers this serves; if you
+        need exact status under them, read it off the wire instead.
         """
+        has_range = request.headers.get("Range") is not None
         try:
             start, stop, _ = request.http_range.indices(size)
-        except ValueError:
-            return 0
-        return max(0, stop - start)
+        except ValueError:  # malformed range -> aiohttp answers 416, no body
+            return 416, 0, None
+        nbytes = max(0, stop - start)
+        if has_range and nbytes == 0:
+            # A well-formed range that resolves to zero bytes is unsatisfiable (start at/
+            # past EOF, or any range on an empty file) -> aiohttp sends 416, no body. indices()
+            # clamps rather than raising, so this is the only signal that it's unsatisfiable.
+            return 416, 0, None
+        if start == 0 and stop == size:  # whole object (range absent, or a full-coverage range)
+            return (206 if has_range else 200), size, None
+        return 206, nbytes, (start, stop)
 
     def _middleware(self):
         @web.middleware
@@ -184,6 +253,7 @@ class HTTPRangeServer:
             # front (it's also the size we need for byte accounting).
             is_read = request.method in ("GET", "HEAD")
             size = self._target_size(request.path) if is_read else None
+            start = time.perf_counter()
             with self._lock:
                 self.n_requests += 1
                 self.methods[request.method] += 1
@@ -193,18 +263,41 @@ class HTTPRangeServer:
                 if is_read and size is None:  # a miss still cost a round trip — count it
                     self.n_misses += 1
                 self._in_flight += 1
+                in_flight = self._in_flight
                 self.max_in_flight = max(self.max_in_flight, self._in_flight)
             nbytes = 0
+            rng: tuple[int, int] | None = None
+            # Derive the status up front (FileResponse only finalizes it at send time).
+            status = 404 if (is_read and size is None) else 200
+            if request.method == "GET" and size is not None:
+                status, nbytes, rng = self._resolve_range(request, size)
+            delay = self.latency.draw_s()
             try:
-                await asyncio.sleep(self.latency.draw_s())  # the injected RTT
-                if request.method == "GET" and size is not None:
-                    nbytes = self._range_bytes(request, size)
+                await asyncio.sleep(delay)  # the injected RTT
+                if nbytes:
                     await self.pipe.transfer(nbytes)  # shared-pipe bandwidth
                 return await handler(request)
+            except web.HTTPException as exc:  # unexpected raise: prefer aiohttp's status
+                status = exc.status
+                raise
             finally:
                 with self._lock:
                     self._in_flight -= 1
                     self.total_bytes += nbytes
+                key = request.path.lstrip("/")
+                self._log.record(
+                    PendingRecord(
+                        t_start=start,
+                        method=request.method,
+                        key=key,
+                        label=self._log.classify(key),
+                        in_flight=in_flight,
+                        latency_ms=delay * 1e3,
+                        range=rng,
+                    ),
+                    status=status,
+                    bytes_down=nbytes,
+                )
 
         return mw
 
@@ -302,6 +395,7 @@ class HTTPRangeServer:
             self.paths = Counter()
             self.max_in_flight = self._in_flight  # keep currently-active requests in the new window
         self.pipe.reset()
+        self._log.reset()
 
     def stats(self) -> dict:
         """Atomic snapshot of the request counters (persists until :meth:`reset_counts`)."""
@@ -315,6 +409,36 @@ class HTTPRangeServer:
                 "methods": dict(self.methods),
                 "paths": dict(self.paths),
             }
+
+    @property
+    def requests(self) -> list[RequestRecord]:
+        """Recent per-request records for drilling down (bounded by ``max_records``).
+
+        A plain list of :class:`~snailmail.record.RequestRecord` — filter it with a
+        comprehension (``[r for r in s.requests if r.status == 404]``) or load it into
+        pandas. The high-level counts in :meth:`report` stay exact even when this buffer
+        has rolled.
+        """
+        return self._log.snapshot()
+
+    def report(self) -> dict:
+        """High-level summary: exact totals plus per-label / per-status breakdowns.
+
+        Complements :meth:`stats` (flat counters) and :attr:`requests` (the records).
+        The breakdown is computed from exact counters, so it is complete regardless of
+        the ``max_records`` cap; ``records_truncated`` flags when the drill-down buffer
+        dropped older records.
+        """
+        s = self.stats()
+        return self._log.summary(
+            {
+                "n_requests": s["n_requests"],
+                "n_gets": s["n_gets"],
+                "n_misses": s["n_misses"],
+                "total_bytes": s["total_bytes"],
+                "max_in_flight": s["max_in_flight"],
+            }
+        )
 
     def describe(self) -> dict:
         return {

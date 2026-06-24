@@ -45,8 +45,9 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable, Literal
 
-from snailmail.bandwidth import SharedPipe
+from snailmail.bandwidth import ClientLink, SharedPipe
 from snailmail.latency import Fixed, LatencyDist
+from snailmail.record import PendingRecord, RequestLog, RequestRecord
 
 # WSGI keys for the S3/HTTP preconditions that make a write conditional. Icechunk uses
 # these for atomic ref create/commit (If-None-Match: * / If-Match: <etag>).
@@ -174,12 +175,27 @@ class LatencyMiddleware:
         latency: LatencyDist | None = None,
         bandwidth_mbs: float | None = None,
         behavior: StoreBehavior = StoreBehavior(),
+        classify: Callable[[str], str] = _classify_prefix,
+        max_records: int | None = 100_000,
+        client: ClientLink | None = None,
     ):
         self.app = app
         self.latency: LatencyDist = latency if latency is not None else Fixed(0.0)
         self.behavior = behavior
         self.set_bandwidth_mbs(bandwidth_mbs)
+        # The shared client uplink/downlink, metered after the source pipe. Cache the
+        # directional pipes so the hot path skips the None-check and attribute walk.
+        self.client = client
+        self._client_up = client.up if client is not None else None
+        self._client_down = client.down if client is not None else None
         self._lock = threading.Lock()
+        self.log = RequestLog(
+            classify=classify, max_records=max_records, logger_name="snailmail.s3"
+        )
+        # The icechunk-component classifier is already computed as `prefix` for the legacy
+        # counters; when it's also the record label (the default), reuse it instead of
+        # re-running the same key scan per request.
+        self._label_is_prefix = classify is _classify_prefix
         self._init_counts()
 
     def _init_counts(self) -> None:
@@ -197,6 +213,7 @@ class LatencyMiddleware:
         self.max_in_flight = 0
 
     def __call__(self, environ: dict, start_response: StartResponse) -> Iterable[bytes]:
+        t_start = time.perf_counter()
         method = environ.get("REQUEST_METHOD", "GET")
         key = _key_of(environ.get("PATH_INFO", ""))
         qs = environ.get("QUERY_STRING", "")
@@ -225,15 +242,32 @@ class LatencyMiddleware:
             if reject:
                 self.conditional_rejected += 1
             self._in_flight += 1
+            in_flight = self._in_flight
             self.max_in_flight = max(self.max_in_flight, self._in_flight)
             # Draw under the lock: draw_s() advances a shared round-robin index that is not
             # itself thread-safe, and this middleware is called from many request threads.
             delay = self.latency.draw_s()
 
+        # The record's start-time fields, finalized in _Metered.close() once the downlink
+        # byte count (and status) is known. ``prefix`` (hardcoded icechunk component) drives
+        # the legacy prefix counters; ``label`` is the configurable report grouping — the
+        # same value unless the caller passed a custom classify=.
+        pending = PendingRecord(
+            t_start=t_start,
+            method=method,
+            key=key,
+            label=prefix if self._label_is_prefix else self.log.classify(key),
+            in_flight=in_flight,
+            latency_ms=delay * 1e3,
+            bytes_up=up,
+            op=op,
+            conditional=bool(conditional),
+        )
+
         time.sleep(delay)  # the injected RTT, once per request — slept outside the lock
 
-        if up:  # uplink bytes (a write) share the one pipe with downlink bytes
-            self.pipe.transfer(up)
+        if up:  # uplink bytes (a write): the source pipe, then the shared client uplink
+            self._meter(up, self._client_up)
             with self._lock:
                 self.bytes_up += up
                 self.prefix_bytes[prefix] += up
@@ -246,7 +280,9 @@ class LatencyMiddleware:
                     ("Content-Length", str(len(_NOT_IMPLEMENTED_XML))),
                 ],
             )
-            return _Metered(self, [_NOT_IMPLEMENTED_XML], prefix)
+            return _Metered(
+                self, [_NOT_IMPLEMENTED_XML], prefix, pending=pending, status_box={"status": 501}
+            )
 
         captured: dict[str, int] = {}
 
@@ -261,7 +297,18 @@ class LatencyMiddleware:
         if is_read and captured.get("status", 200) >= 400:
             with self._lock:
                 self.n_misses += 1
-        return _Metered(self, app_iter, prefix)
+        return _Metered(self, app_iter, prefix, pending=pending, status_box=captured)
+
+    def _meter(self, nbytes: int, client_pipe: SharedPipe | None) -> None:
+        """Serialize ``nbytes`` through this source's pipe, then the shared client pipe.
+
+        One definition of the two-stage transfer used by both the uplink (write) and
+        downlink (response) paths; ``client_pipe`` is the pre-resolved direction
+        (``self._client_up`` / ``self._client_down``), ``None`` when no client link.
+        """
+        self.pipe.transfer(nbytes)
+        if client_pipe is not None:
+            client_pipe.transfer(nbytes)
 
     # -- live controls + observability (mirrors HTTPRangeServer) --
     def set_latency(self, latency: LatencyDist) -> None:
@@ -280,6 +327,7 @@ class LatencyMiddleware:
             self._init_counts()
             self.max_in_flight = self._in_flight = in_flight  # carry in-flight into the new window
         self.pipe.reset()
+        self.log.reset()
 
     def stats(self) -> dict:
         """Atomic snapshot of the counters (persists until :meth:`reset_counts`).
@@ -308,6 +356,34 @@ class LatencyMiddleware:
                 "data_requests": prefixes.get(_DATA_PREFIX, 0),
             }
 
+    def report(self) -> dict:
+        """High-level summary: exact totals plus per-label / per-status breakdowns.
+
+        Complements :meth:`stats` (flat counters) and :attr:`requests` (the records).
+        The breakdown is computed from exact counters, so it is complete regardless of
+        the ``max_records`` cap; ``records_truncated`` flags when the drill-down buffer
+        dropped older records. ``metadata_requests`` + ``data_requests`` +
+        ``other_requests`` (anything outside the Icechunk components, e.g. repo-existence
+        probes) sum to ``n_requests``.
+        """
+        s = self.stats()
+        return self.log.summary(
+            {
+                "n_requests": s["n_requests"],
+                "n_misses": s["n_misses"],
+                "total_bytes": s["total_bytes"],
+                "max_in_flight": s["max_in_flight"],
+                "metadata_requests": s["metadata_requests"],
+                "data_requests": s["data_requests"],
+                "other_requests": s["n_requests"] - s["metadata_requests"] - s["data_requests"],
+            }
+        )
+
+    @property
+    def requests(self) -> list[RequestRecord]:
+        """Recent per-request records for drilling down (bounded by ``max_records``)."""
+        return self.log.snapshot()
+
     def describe(self) -> dict:
         return {
             "latency": self.latency.describe(),
@@ -321,22 +397,37 @@ class _Metered:
 
     Bytes are metered through the pipe and added to the counters *before each chunk is
     yielded* — i.e. before the server writes it to the client — so a ``stats()`` read that
-    races a just-finished response still sees the bytes. ``close()`` only decrements the
-    in-flight gauge (it runs after the response is fully sent, which the byte counters
-    cannot wait for). The WSGI server always calls ``close()`` if it is present.
+    races a just-finished response still sees the bytes. ``close()`` decrements the
+    in-flight gauge and emits the per-request :class:`~snailmail.record.RequestRecord`
+    (it runs after the response is fully sent, which is the first point the total
+    downlink byte count is known). The WSGI server always calls ``close()`` if present.
     """
 
-    def __init__(self, mw: LatencyMiddleware, app_iter: Iterable[bytes], prefix: str):
+    def __init__(
+        self,
+        mw: LatencyMiddleware,
+        app_iter: Iterable[bytes],
+        prefix: str,
+        *,
+        pending: PendingRecord,
+        status_box: dict,
+    ):
         self._mw = mw
         self._it = app_iter
         self._prefix = prefix
+        self._pending = pending
+        self._status_box = (
+            status_box  # filled by the WSGI start_response wrapper (status arrives late)
+        )
+        self._down = 0
 
     def __iter__(self):
         mw, prefix = self._mw, self._prefix
         for chunk in self._it:
             if chunk:
                 n = len(chunk)
-                mw.pipe.transfer(n)  # bandwidth: meter before the chunk goes out
+                self._down += n
+                mw._meter(n, mw._client_down)  # source pipe, then the shared client downlink
                 with mw._lock:
                     mw.bytes_down += n
                     mw.prefix_bytes[prefix] += n
@@ -348,6 +439,9 @@ class _Metered:
             closer()
         with self._mw._lock:
             self._mw._in_flight -= 1
+        self._mw.log.record(
+            self._pending, status=self._status_box.get("status", 0), bytes_down=self._down
+        )
 
 
 class ObjectStore:
@@ -376,7 +470,37 @@ class ObjectStore:
     region:          S3 region reported to the client (default ``"us-east-1"``).
     port:            TCP port to bind (0 = ephemeral).
     quiet:           suppress werkzeug's per-request access log (default ``True``); set
-                     ``False`` to see each S3 request moto serves on stderr.
+                     ``False`` to see each S3 request moto serves on stderr. (This is
+                     moto's own access log; for snailmail's structured per-request line
+                     use the ``snailmail.s3`` logger — see Observability below.)
+    classify:        ``key -> label`` grouping for :meth:`report`'s ``by_label`` breakdown.
+                     Defaults to the Icechunk-component classifier (config / refs /
+                     snapshots / manifests / transactions / chunks); pass your own to
+                     group differently.
+    max_records:     cap on retained per-request records for :attr:`requests` drill-down
+                     (a bounded ring buffer; ``None`` = unbounded, ``0`` = counts only). :meth:`report` and
+                     :meth:`stats` counts stay exact regardless; only the record list is
+                     capped, and :meth:`report` flags ``records_truncated`` when it rolls.
+    client:          a shared :class:`~snailmail.bandwidth.ClientLink` modelling the one
+                     client uplink/downlink. ``bandwidth_mbs`` caps *this source's* egress;
+                     pass the **same** ``ClientLink`` to several stores to also cap their
+                     *combined* traffic through one connection — e.g. an Icechunk store and
+                     the bucket it virtualizes both squeezing through your laptop's link.
+                     ``None`` (default) = no client-side cap.
+
+    Observability
+    -------------
+    Three complementary views of traffic since the last :meth:`reset_counts`, mirroring
+    :class:`~snailmail.server.HTTPRangeServer`:
+
+    * :meth:`stats` — flat counters (by op / component, bytes up/down, misses, peak).
+    * :meth:`report` — high-level summary dict: totals, ``metadata_requests`` vs
+      ``data_requests``, and ``by_label`` / ``by_status`` breakdowns. JSON-serializable.
+    * :attr:`requests` — recent :class:`~snailmail.record.RequestRecord` objects to drill
+      into individual requests (op, status, bytes, injected RTT, duration, conditional).
+
+    A per-request line is also emitted to the stdlib ``snailmail.s3`` logger at INFO (off
+    until you add a handler / raise the level).
     """
 
     def __init__(
@@ -390,6 +514,9 @@ class ObjectStore:
         region: str = "us-east-1",
         port: int = 0,
         quiet: bool = True,
+        classify: Callable[[str], str] = _classify_prefix,
+        max_records: int | None = 100_000,
+        client: ClientLink | None = None,
     ):
         try:
             from moto.server import DomainDispatcherApplication, create_backend_app
@@ -405,6 +532,9 @@ class ObjectStore:
             latency=latency,
             bandwidth_mbs=bandwidth_mbs,
             behavior=behavior,
+            classify=classify,
+            max_records=max_records,
+            client=client,
         )
         self._req_port = port
         self._quiet = quiet
@@ -518,6 +648,14 @@ class ObjectStore:
 
     def stats(self) -> dict:
         return self.middleware.stats()
+
+    def report(self) -> dict:
+        return self.middleware.report()
+
+    @property
+    def requests(self) -> list[RequestRecord]:
+        """Recent per-request records for drilling down (bounded by ``max_records``)."""
+        return self.middleware.requests
 
     def realized_percentiles(self) -> dict:
         return self.middleware.latency.percentiles()

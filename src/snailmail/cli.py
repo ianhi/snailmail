@@ -10,6 +10,8 @@ from importlib.metadata import version
 from snailmail.latency import Exponential, Fixed, LatencyDist, LogNormal, Normal
 from snailmail.server import HTTPRangeServer
 
+_request_log_enabled = False  # guards _enable_request_log() against stacking handlers
+
 # CLI param -> which --dist owns it. A param set for the wrong dist is a user error,
 # not silently ignored, so the realized latency always matches what was asked for.
 _DIST_PARAMS = {
@@ -87,13 +89,41 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit the server description as one line of JSON instead of the banner",
     )
+    ap.add_argument(
+        "--log",
+        action="store_true",
+        help="log one line per request to stderr: METHOD key [label] -> status, "
+        "bytes, injected RTT, total time, and in-flight count",
+    )
     return ap
+
+
+def _enable_request_log() -> None:
+    """Send snailmail's per-request log lines to stderr (the ``--log`` flag).
+
+    Configures only the ``snailmail`` logger (not the root logger), so this never turns
+    on unrelated library logging — it just opts into the lines the server already emits.
+    """
+    import logging
+    import sys
+
+    global _request_log_enabled
+    if _request_log_enabled:  # idempotent: don't stack handlers if main() runs twice
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
+    logger = logging.getLogger("snailmail")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    _request_log_enabled = True
 
 
 def main() -> None:
     ap = _parser()
     args = ap.parse_args()
 
+    if args.log:
+        _enable_request_log()
     latency = _latency_from_args(args, ap)
     try:
         server = HTTPRangeServer(
@@ -120,9 +150,11 @@ def main() -> None:
         pass
     finally:
         server.stop()
+        rep = server.report()
         print(
-            f"\nstopped. served {server.n_gets} GETs, {server.total_bytes} bytes, "
-            f"peak concurrency {server.max_in_flight}."
+            f"\nstopped. {rep['n_requests']} requests, {rep['n_gets']} GETs, "
+            f"{rep['n_misses']} misses, {rep['total_bytes']} bytes, "
+            f"peak concurrency {rep['max_in_flight']}, status {rep['by_status']}."
         )
 
 

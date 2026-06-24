@@ -92,9 +92,9 @@ Pre-commit hooks (ruff lint + ruff format + mypy + file hygiene) run via
   stops it. Don't reintroduce thread-per-request.
 - **Counters under a lock.** `stats()` is a post-hoc, atomic snapshot (counts, total
   bytes, 404 misses, peak `max_in_flight`, and per-method / per-path breakdowns) that
-  persists until `reset_counts()`. For accounting only, `_range_bytes` reuses aiohttp's
-  own `request.http_range` parser (not a hand-rolled one) so the counted bytes match
-  what the static handler serves; serving correctness still comes entirely from
+  persists until `reset_counts()`. For accounting only, `_resolve_range` reuses aiohttp's
+  own `request.http_range` parser (not a hand-rolled one) so the counted bytes and derived
+  status (200/206/416) match what the static handler serves; serving correctness still comes entirely from
   aiohttp. See `_target_size`'s docstring for why size/miss are resolved up front
   rather than read back from aiohttp.
 

@@ -103,6 +103,70 @@ Fixed(20)                          # deterministic
 
 `latency=None` (the default) injects no latency.
 
+## Inspecting traffic
+
+Both servers expose the **same three views** of what a reader did, since the last
+`reset_counts()`. They go from coarse to fine, so you can start with the headline and
+drill down only when you need to:
+
+```python
+with HTTPRangeServer("store/", latency=LogNormal(mode_ms=45)) as server:
+    open_and_read(server.base)
+
+    server.stats()    # flat counters: GETs, bytes, misses, peak concurrency, raw paths
+    server.report()   # high-level summary: totals + by_label / by_status breakdowns
+    server.requests   # the individual RequestRecord objects, to drill into single requests
+```
+
+**`report()`** is the headline — a plain, JSON-serializable dict built from *exact*
+counters, so it's easy to assert on or log:
+
+```python
+{'n_requests': 84, 'n_gets': 84, 'n_misses': 0, 'total_bytes': 8200000, 'max_in_flight': 4,
+ 'by_label': {'level 0': {'requests': 64, 'bytes': 8400000},
+              'level 1': {'requests': 20, 'bytes': 1300000}},
+ 'by_status': {200: 82, 206: 2},
+ 'records_kept': 84, 'records_truncated': False}
+```
+
+`by_label` groups requests however you want via a **`classify=` function** passed to the
+constructor (`key -> label`). It defaults to per-key counts; pass a coarser function to
+roll related keys up — e.g. by top-level directory, or, for a chunked dataset, by
+resolution level:
+
+```python
+HTTPRangeServer("store/", classify=lambda key: key.split("/")[0])
+```
+
+**`server.requests`** is a list of `RequestRecord` (a frozen dataclass) for drill-down —
+each carries `method`, `key`, `status`, `nbytes`, the injected `latency_ms`, the total
+`dur_ms` (so bandwidth-throttling shows up as `dur_ms` ≫ `latency_ms`), `in_flight`,
+`label`, and the byte `range`. Filter it like any list, or load it into pandas:
+
+```python
+slowest = sorted(server.requests, key=lambda r: r.dur_ms, reverse=True)[:5]
+refetched = [r for r in server.requests if r.status == 200 and r.key == "chunks/0.0.0"]
+```
+
+It's a **bounded** buffer (`max_records=100_000` by default; `None` for unbounded) so a
+long run can't exhaust memory — the `report()`/`stats()` counts stay exact regardless,
+and `report()["records_truncated"]` flags when the buffer has rolled.
+
+For a **live trace**, snailmail emits one line per request to the stdlib `logging`
+loggers `snailmail.http` and `snailmail.s3` (off until you opt in — it's plain `logging`,
+so you control format, level, and where it goes):
+
+```python
+import logging
+logging.getLogger("snailmail").setLevel(logging.INFO)
+logging.getLogger("snailmail").addHandler(logging.StreamHandler())
+# GET chunks/0.0.0 [level 0] -> 200  97405B  +45ms rtt  113ms total  inflight=4
+```
+
+`ObjectStore` works identically — its `report()` additionally splits
+`metadata_requests` vs `data_requests`, and each record carries the S3 `op` and whether
+the write was `conditional`.
+
 ## From the CLI
 
 ```bash
@@ -111,12 +175,16 @@ snailmail ./store --dist normal --mean-ms 45 --std-ms 10
 snailmail ./store --dist exponential --mean-ms 45
 snailmail ./store --dist fixed --value-ms 20
 snailmail ./store --bandwidth-mbs 100 --port 8080 --json   # no latency; JSON address line
+snailmail ./store --dist lognormal --mode-ms 45 --log      # stream one line per request
 ```
 
 The argument is the directory to serve.
 
 `--json` prints a single machine-readable line and flushes it before serving,
 so a script can spawn snailmail, read the bound address from stdout, and proceed.
+
+`--log` streams a per-request line to stderr while serving (the `snailmail.http` log,
+above); on exit it prints a one-line summary including the status breakdown.
 
 The CLI rejects a flag that doesn't belong to the chosen `--dist`. Omit `--dist`
 for no injected latency.
@@ -166,12 +234,52 @@ with ObjectStore(latency=LogNormal(mode_ms=45)) as store:
 
 `metadata_requests` (config/refs/snapshots/manifests/transactions) and `data_requests`
 (chunks) split the cost the way a benchmark wants it; `prefixes` and `prefix_bytes` give
-the per-component breakdown. As with the range server, tune between measurements with
-`set_latency(dist)`, `set_bandwidth_mbs(x)`, and `reset_counts()`, and read the endpoint
-from `store.endpoint_url` if you're driving it with another S3 client (e.g. `obstore` or
-`boto3`). The store is in-process and ephemeral — objects live in memory (moto spools any
-object over ~5 MB to a temp file) and vanish on exit. Per-request access logging is off by
-default; pass `quiet=False` to see every S3 request on stderr.
+the per-component breakdown. The same `report()` / `requests` views and `snailmail.s3`
+per-request log described under [Inspecting traffic](#inspecting-traffic) apply here —
+`report()` rolls the components into `by_label` and adds the metadata/data split, and each
+record carries the S3 `op` and whether the write was `conditional`. As with the range
+server, tune between measurements with `set_latency(dist)`, `set_bandwidth_mbs(x)`, and
+`reset_counts()`, and read the endpoint from `store.endpoint_url` if you're driving it with
+another S3 client (e.g. `obstore` or `boto3`). The store is in-process and ephemeral —
+objects live in memory (moto spools any object over ~5 MB to a temp file) and vanish on
+exit. (`quiet=False` additionally surfaces moto's own werkzeug access log on stderr.)
+
+### Two buckets, and the client link
+
+Virtualizing with Icechunk involves **two** object stores: the Icechunk store itself
+(config, refs, snapshots, manifests, native chunks) and the *remote bucket it virtualizes*
+(the original NetCDF/HDF5/GRIB files the virtual chunks point into). Those are different
+backends with different latencies, so model them as two `ObjectStore`s — point the repo at
+the first, and Icechunk's virtual-chunk container at the second's `endpoint_url`. You then
+get a separate `report()` for each: metadata cost vs. virtualized-data cost.
+
+`bandwidth_mbs` caps each *source's* egress independently. But both buckets are read by one
+machine over one connection — so a shared **`ClientLink`** models that single
+uplink/downlink, and their combined traffic contends for it:
+
+```python
+from snailmail import ObjectStore, ClientLink, LogNormal
+
+client = ClientLink(down_mbs=50, up_mbs=10)   # your laptop's connection (asymmetric)
+
+ice  = ObjectStore(bucket="icechunk",    latency=LogNormal(mode_ms=30),  client=client)
+data = ObjectStore(bucket="source-data", latency=LogNormal(mode_ms=150), client=client)
+
+with ice, data:
+    ...                       # repo on `ice`; virtual chunks resolved against `data`
+    ice.report()              # metadata round-trips, on the fast bucket
+    data.report()             # virtual-data fetches, on the slow bucket
+    # ice + data downloads can't jointly exceed 50 MB/s — they share `client.down`
+```
+
+Pass the **same** `ClientLink` to every store that shares the connection. Each request's
+bytes meter through its source pipe and then the shared client pipe, so the client link
+becomes the aggregate bottleneck when both buckets are busy at once. A per-store
+`reset_counts()` leaves the shared link alone; call `client.reset()` to clear it. (The
+series composition slightly over-counts a single uncontended transfer; it's accurate in
+the regime that matters — client link slower than cloud egress — and is the only thing that
+captures cross-store contention. `ClientLink` is `ObjectStore`-only for now, since
+`HTTPRangeServer`'s pipe is async and can't be shared across event loops.)
 
 ### Emulating store quirks (conditional writes)
 
