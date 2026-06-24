@@ -277,9 +277,10 @@ def test_icechunk_create_reopen_read_pays_and_counts_metadata():
     import numpy as np
 
     from snailmail import ObjectStore
+    from snailmail.convenience import icechunk_storage
 
     with ObjectStore(latency=Fixed(0)) as s:
-        storage = s.icechunk_storage(prefix="repo")
+        storage = icechunk_storage(s, prefix="repo")
 
         repo = icechunk.Repository.create(storage)
         session = repo.writable_session("main")
@@ -315,6 +316,7 @@ def test_icechunk_2228_conditional_create_dropped_on_spec_v1():
     icechunk = pytest.importorskip("icechunk", reason="needs icechunk")
 
     from snailmail import ObjectStore
+    from snailmail.convenience import icechunk_storage
 
     def create(store, spec_version):
         config = icechunk.RepositoryConfig(
@@ -323,7 +325,7 @@ def test_icechunk_2228_conditional_create_dropped_on_spec_v1():
                 unsafe_use_conditional_update=False,
             )
         )
-        storage = store.icechunk_storage(prefix=f"v{spec_version}")
+        storage = icechunk_storage(store, prefix=f"v{spec_version}")
         icechunk.Repository.create(storage, config, spec_version=spec_version)
 
     with ObjectStore(latency=Fixed(0), behavior=StoreBehavior(conditional_writes="reject")) as s:

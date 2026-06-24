@@ -452,16 +452,18 @@ class ObjectStore:
     omit them for a plain local S3 store (still counted, still able to emulate quirks). Add
     them to benchmark under realistic cloud conditions.
 
-    Point a consumer at :attr:`endpoint_url` (path-style, plain HTTP), or use
-    :meth:`icechunk_storage` for a ready-wired ``icechunk.Storage``. Counters and live
-    controls (:meth:`set_latency`/:meth:`set_bandwidth_mbs`/:meth:`set_behavior`) delegate
-    to the middleware, mirroring :class:`~snailmail.server.HTTPRangeServer` so a
-    benchmark talks to both the same way.
+    Point a consumer at :attr:`endpoint_url` (path-style, plain HTTP) — or any S3 client
+    via ``obstore`` / ``boto3``. Counters and live controls
+    (:meth:`set_latency`/:meth:`set_bandwidth_mbs`/:meth:`set_behavior`) delegate to the
+    middleware, mirroring :class:`~snailmail.server.HTTPRangeServer` so a benchmark talks
+    to both the same way. (For Icechunk, the optional free function
+    :func:`snailmail.convenience.icechunk_storage` wires a ``Storage`` to this store — kept off the
+    store itself so the object stays domain-agnostic.)
 
     Parameters
     ----------
     bucket:          bucket to create and serve (default ``"snailmail"``).
-    prefix:          default key prefix for :meth:`icechunk_storage` (the repo root).
+    prefix:          default S3 key prefix a consumer roots at (e.g. an Icechunk repo root).
     latency:         per-request latency distribution; ``None`` (default) injects none.
     bandwidth_mbs:   shared-pipe bandwidth, MB/s; None = unlimited.
     behavior:        emulated store quirks (:class:`StoreBehavior`) — e.g.
@@ -617,21 +619,6 @@ class ObjectStore:
     def endpoint_url(self) -> str:
         """S3 endpoint to hand a client (path-style, plain HTTP)."""
         return f"http://127.0.0.1:{self.port}"
-
-    def icechunk_storage(self, prefix: str | None = None):
-        """A ready-wired ``icechunk.Storage`` pointing at this store (read+write)."""
-        import icechunk
-
-        return icechunk.s3_storage(
-            bucket=self.bucket,
-            prefix=self.prefix if prefix is None else prefix,
-            endpoint_url=self.endpoint_url,
-            allow_http=True,
-            force_path_style=True,
-            region=self.region,
-            access_key_id="snailmail",
-            secret_access_key="snailmail",
-        )
 
     # -- delegate live controls + observability to the middleware --
     def set_latency(self, latency: LatencyDist) -> None:

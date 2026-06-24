@@ -93,7 +93,7 @@ def _parser() -> argparse.ArgumentParser:
         "--log",
         action="store_true",
         help="log one line per request to stderr: METHOD key [label] -> status, "
-        "bytes, injected RTT, total time, and in-flight count",
+        "bytes, injected latency, total time, and in-flight count",
     )
     return ap
 

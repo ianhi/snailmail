@@ -52,6 +52,14 @@ Pre-commit hooks (ruff lint + ruff format + mypy + file hygiene) run via
 - **Comments:** tight and useful — explain *why*, not *what*. No session- or
   conversation-specific notes ("as we discussed", change logs, dates); a comment
   must make sense to someone reading the file cold a year from now.
+- **Keep the core general — no domain-specific things on the root objects.** snailmail is
+  a general benchmarking tool. `ObjectStore` and `HTTPRangeServer` must stay
+  domain-agnostic: no methods/attributes that import or return a specific consumer's
+  types (icechunk, zarr, napari, ...). Domain conveniences are fine but live **apart** —
+  a free function under `snailmail.convenience` that takes the store as an argument
+  (e.g. `snailmail.convenience.icechunk_storage(store, ...)`), reading only the store's generic primitives
+  (`endpoint_url`/`bucket`/`region`). Generic, overridable hooks (a `classify=` callable)
+  are fine; domain *types* on the core object are not.
 
 ## Design decisions (read before changing things)
 

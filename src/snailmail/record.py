@@ -38,8 +38,8 @@ class RequestRecord:
     key: str  # object key / path served
     status: int  # response status (200, 206, 404, 416, 501, ...)
     nbytes: int  # total wire bytes for this request: request body (up) + response body (down)
-    latency_ms: float  # the injected RTT drawn for this request
-    dur_ms: float  # total wall time the request spent in the server (RTT + bandwidth wait + work)
+    latency_ms: float  # the injected per-request latency (round-trip delay) drawn for this request
+    dur_ms: float  # total wall time in the server (injected latency + bandwidth wait + work)
     in_flight: int  # concurrent requests at the moment this one was dispatched
     label: str  # classify(key): the group this request rolls up under in report()
     range: tuple[int, int] | None = None  # HTTP byte range [start, stop); None if whole-object
@@ -143,11 +143,12 @@ class RequestLog:
             self._total += 1
         # Emit outside the lock. isEnabledFor() short-circuits when no handler wants it,
         # so the formatting cost is only paid when logging is actually configured on. The
-        # line carries label (grep by component) and both clocks: +RTTms is the injected
-        # latency, durms the real wall time (so bandwidth throttling shows up in the log).
+        # line carries label (grep by component) and both clocks: "+Nms latency" is the
+        # injected per-request delay, "Nms total" the real wall time the request took (so
+        # bandwidth throttling, which inflates total beyond latency, shows up in the log).
         if self._logger.isEnabledFor(logging.INFO):
             self._logger.info(
-                "%s %s [%s] -> %d  %dB  +%.0fms rtt  %.0fms total  inflight=%d",
+                "%s %s [%s] -> %d  %dB  +%.0fms latency  %.0fms total  %d in flight",
                 rec.method,
                 rec.key,
                 rec.label,

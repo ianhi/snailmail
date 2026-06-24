@@ -159,7 +159,7 @@ so you control format, level, and where it goes):
 import logging
 logging.getLogger("snailmail").setLevel(logging.INFO)
 logging.getLogger("snailmail").addHandler(logging.StreamHandler())
-# GET chunks/0.0.0 [level 0] -> 200  97405B  +45ms rtt  113ms total  inflight=4
+# GET chunks/0.0.0 [level 0] -> 200  97405B  +45ms latency  113ms total  4 in flight
 ```
 
 `ObjectStore` works identically — its `report()` additionally splits
@@ -212,15 +212,19 @@ wire. It needs the `s3` extra (which pulls in moto):
 uv add 'snailmail[s3]'        # or: pip install 'snailmail[s3]'
 ```
 
-Point Icechunk at it with `icechunk_storage()`, which returns a ready-wired
-`icechunk.Storage` (path-style, plain HTTP, dummy credentials):
+Point Icechunk at it with `snailmail.convenience.icechunk_storage(store, ...)` — a
+standalone convenience that returns a ready-wired `icechunk.Storage` (path-style, plain
+HTTP, dummy credentials). It's a free function under `snailmail.convenience`, deliberately
+*not* a method on `ObjectStore`: the store stays a general S3 server, and domain-specific
+wiring lives beside it.
 
 ```python
 import icechunk
 from snailmail import ObjectStore, LogNormal
+from snailmail.convenience import icechunk_storage
 
 with ObjectStore(latency=LogNormal(mode_ms=45)) as store:
-    repo = icechunk.Repository.open(store.icechunk_storage(prefix="my-repo"))
+    repo = icechunk.Repository.open(icechunk_storage(store, prefix="my-repo"))
     read_an_array(repo)        # the reopen + read you're benchmarking
 
     print(store.stats())
