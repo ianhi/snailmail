@@ -40,34 +40,14 @@ A key is served iff its resolved real path is a file **inside** the root. Symlin
 followed, but a symlink whose target escapes the root is not served (it 404s) and is
 not listed by `files()` or counted in `n_files` — index and serving agree.
 
-### Serving a single file
-
-To benchmark one file, use `HTTPRangeServer.from_file(path)` — it serves that file
-directly (reachable at its basename), with no directory, no temp dir, and **no copy**,
-so a multi-hundred-MB fixture costs nothing to set up:
-
-```python
-from snailmail import HTTPRangeServer, LogNormal
-
-with HTTPRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
-    open_and_read(server.url("CMU-1.tiff"))   # server.files() == ["CMU-1.tiff"]
-    print(server.stats())
-```
-
-It's the same server with one key: `describe()`, `files()`, `url()`, and `stats()`
-behave exactly as in directory mode. The file is streamed from disk via the same
-machinery, and since only that one path is ever served, there's no traversal surface —
-every other key 404s.
-
 ```python
 from snailmail import HTTPRangeServer, LogNormal
 
 with HTTPRangeServer("my_zarr_store/", latency=LogNormal(mode_ms=40), bandwidth_mbs=100) as server:
-    server.reset_counts()
     open_and_read(server.base)         # your reader: obstore, icechunk, zarr, ...
     print(server.stats())
     # {'n_gets': 312, 'n_requests': 312, 'n_misses': 0, 'max_in_flight': 16,
-    #  'total_bytes': .., 'methods': {'GET': 312}, 'paths': {..}}
+    #  'total_bytes': 41943040, 'methods': {'GET': 312}, 'paths': {..}}
 ```
 
 `open_and_read` stands in for the reader you're benchmarking. It makes HTTP GETs
@@ -89,6 +69,25 @@ with HTTPRangeServer("my_zarr_store/") as server:
 requests for keys that don't exist (404, like an object store's NoSuchKey). Tune
 between measurements with `set_latency(dist)`, `set_bandwidth_mbs(x)`, and
 `reset_counts()`.
+
+### Serving a single file
+
+To benchmark one file, use `HTTPRangeServer.from_file(path)` — it serves that file
+directly (reachable at its basename), with no directory, no temp dir, and **no copy**,
+so a multi-hundred-MB fixture costs nothing to set up:
+
+```python
+from snailmail import HTTPRangeServer, LogNormal
+
+with HTTPRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
+    open_and_read(server.url("CMU-1.tiff"))   # server.files() == ["CMU-1.tiff"]
+    print(server.stats())
+```
+
+It's the same server with one key: `describe()`, `files()`, `url()`, and `stats()`
+behave exactly as in directory mode. The file is streamed from disk via the same
+machinery, and since only that one path is ever served, there's no traversal surface —
+every other key 404s.
 
 Latency is a pluggable distribution passed as `latency=`:
 
@@ -122,7 +121,7 @@ with HTTPRangeServer("store/", latency=LogNormal(mode_ms=45)) as server:
 counters, so it's easy to assert on or log:
 
 ```python
-{'n_requests': 84, 'n_gets': 84, 'n_misses': 0, 'total_bytes': 8200000, 'max_in_flight': 4,
+{'n_requests': 84, 'n_gets': 84, 'n_misses': 0, 'total_bytes': 9700000, 'max_in_flight': 4,
  'by_label': {'level 0': {'requests': 64, 'bytes': 8400000},
               'level 1': {'requests': 20, 'bytes': 1300000}},
  'by_status': {200: 82, 206: 2},
@@ -226,7 +225,8 @@ with ObjectStore(latency=LogNormal(mode_ms=45)) as store:
 
     print(store.stats())
     # {'n_requests': 6, 'n_misses': 2, 'metadata_requests': 4, 'data_requests': 0,
-    #  'ops': {'GET': 6}, 'max_in_flight': 3, 'bytes_down': 2427, 'bytes_up': 0,
+    #  'ops': {'GET': 6}, 'methods': {'GET': 6}, 'max_in_flight': 3,
+    #  'total_bytes': 2427, 'bytes_down': 2427, 'bytes_up': 0,
     #  'prefixes': {'config': 1, 'refs': 1, 'snapshots': 1, 'manifests': 1, 'other': 2},
     #  'prefix_bytes': {'config': 323, 'refs': 337, 'snapshots': 604, 'manifests': 355},
     #  'conditional_stripped': 0, 'conditional_rejected': 0}

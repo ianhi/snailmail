@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-24
+
+### Added
+- Per-request **observability** on both servers, alongside the existing `stats()`:
+  - `report()` — a high-level, JSON-serializable summary: totals plus `by_label` /
+    `by_status` breakdowns (and, on `ObjectStore`, the `metadata_requests` /
+    `data_requests` / `other_requests` split). Built from exact counters, so it stays
+    complete even after the drill-down buffer rolls.
+  - `requests` — the recent `RequestRecord` objects for drilling into individual
+    requests: `status`, wire `nbytes`, byte `range`, injected `latency_ms`, total
+    `dur_ms`, `in_flight`, `label`, and — on S3 — `op` and whether the write was
+    `conditional`.
+  - `classify=` to group keys for the `by_label` breakdown, and `max_records=` to cap the
+    drill-down ring buffer (`None` = unbounded, `0` = counts only).
+- Per-request logging via the stdlib loggers `snailmail.http` / `snailmail.s3` (off until
+  you add a handler / raise the level). The CLI gains `--log` to stream one line per
+  request, and its stop summary now shows the status breakdown.
+- `ClientLink`: a shared client uplink/downlink metered across multiple `ObjectStore`s on
+  top of each store's per-source `bandwidth_mbs` — for modelling an Icechunk store and the
+  remote bucket it virtualizes contending for one connection. Asymmetric (`down_mbs` /
+  `up_mbs`); `ObjectStore`-only for now.
+
+### Fixed
+- `HTTPRangeServer` recorded `206` for well-formed but unsatisfiable range requests (a
+  range past EOF, or any range against an empty file) where aiohttp actually sends `416`;
+  the recorded status now matches the wire.
+
 ## [0.3.0] - 2026-06-22
 
 ### Added

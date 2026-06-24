@@ -1,7 +1,7 @@
 [project]
 name = "snailmail"
 dynamic = ["version"]
-description = "A local HTTP server that serves a directory over Range with injectable latency and bandwidth limits, for benchmarking range / object-store / virtual-chunk reads under realistic network conditions."
+description = "Local HTTP-range and S3 object-store servers with injectable latency and bandwidth limits, for benchmarking range / object-store / virtual-chunk reads under realistic network conditions on your laptop."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
