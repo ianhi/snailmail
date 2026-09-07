@@ -2,14 +2,13 @@
 
 import os
 import time
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
 from snailmail import Exponential, Fixed, HTTPRangeServer, LogNormal, Normal
 from snailmail.cli import _parser
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -386,8 +385,9 @@ def test_malformed_range_does_not_500(datadir, bad_range):
 def test_cli_non_directory_root_errors_cleanly(tmp_path):
     f = tmp_path / "afile.bin"
     f.write_bytes(b"x")
-    from snailmail.cli import main
     import sys
+
+    from snailmail.cli import main
 
     argv = sys.argv
     sys.argv = ["snailmail", str(f)]

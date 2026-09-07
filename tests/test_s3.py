@@ -17,7 +17,6 @@ import pytest
 
 from snailmail import Fixed, LatencyMiddleware, StoreBehavior
 
-
 # ---------------------------------------------------------------------------
 # LatencyMiddleware unit tests (no moto): drive WSGI directly
 # ---------------------------------------------------------------------------
@@ -412,9 +411,9 @@ def test_reset_clears_records_s3():
 # ClientLink: a shared client uplink/downlink across stores
 # ---------------------------------------------------------------------------
 
-import threading  # noqa: E402
+import threading
 
-from snailmail import ClientLink  # noqa: E402
+from snailmail import ClientLink
 
 
 def test_client_link_realized_caps():
