@@ -379,8 +379,9 @@ entry point (the two transports already need both), e.g. a `Protocol`:
 class BandwidthModel(Protocol):
     """Returns/awaits the delay to charge a transfer of `nbytes`.
     Implementations own any shared state and locking. `B is None` => no limit."""
-    async def transfer(self, nbytes: int) -> None: ...   # aiohttp path
-    def transfer_sync(self, nbytes: int) -> None: ...    # WSGI/moto path
+
+    async def transfer(self, nbytes: int) -> None: ...  # aiohttp path
+    def transfer_sync(self, nbytes: int) -> None: ...  # WSGI/moto path
     def reset(self) -> None: ...
 ```
 
