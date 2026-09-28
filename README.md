@@ -44,7 +44,7 @@ not listed by `files()` or counted in `n_files` — index and serving agree.
 from snailmail import HTTPRangeServer, LogNormal
 
 with HTTPRangeServer("my_zarr_store/", latency=LogNormal(mode_ms=40), bandwidth_mbs=100) as server:
-    open_and_read(server.base)         # your reader: obstore, icechunk, zarr, ...
+    open_and_read(server.base)  # your reader: obstore, icechunk, zarr, ...
     print(server.stats())
     # {'n_gets': 312, 'n_requests': 312, 'n_misses': 0, 'max_in_flight': 16,
     #  'total_bytes': 41943040, 'methods': {'GET': 312}, 'paths': {..}}
@@ -80,7 +80,7 @@ so a multi-hundred-MB fixture costs nothing to set up:
 from snailmail import HTTPRangeServer, LogNormal
 
 with HTTPRangeServer.from_file("CMU-1.tiff", latency=LogNormal(mode_ms=40)) as server:
-    open_and_read(server.url("CMU-1.tiff"))   # server.files() == ["CMU-1.tiff"]
+    open_and_read(server.url("CMU-1.tiff"))  # server.files() == ["CMU-1.tiff"]
     print(server.stats())
 ```
 
@@ -94,10 +94,10 @@ Latency is a pluggable distribution passed as `latency=`:
 ```python
 from snailmail import LogNormal, Normal, Exponential, Fixed
 
-LogNormal(mode_ms=45, sigma=0.5)   # unimodal hump with long right tail; fits object-store GET RTT
-Normal(mean_ms=45, std_ms=10)      # symmetric, truncated at 0
-Exponential(mean_ms=45)            # peak at 0; a poor model for GET RTT
-Fixed(20)                          # deterministic
+LogNormal(mode_ms=45, sigma=0.5)  # unimodal hump with long right tail; fits object-store GET RTT
+Normal(mean_ms=45, std_ms=10)  # symmetric, truncated at 0
+Exponential(mean_ms=45)  # peak at 0; a poor model for GET RTT
+Fixed(20)  # deterministic
 ```
 
 `latency=None` (the default) injects no latency.
@@ -112,20 +112,29 @@ drill down only when you need to:
 with HTTPRangeServer("store/", latency=LogNormal(mode_ms=45)) as server:
     open_and_read(server.base)
 
-    server.stats()    # flat counters: GETs, bytes, misses, peak concurrency, raw paths
-    server.report()   # high-level summary: totals + by_label / by_status breakdowns
-    server.requests   # the individual RequestRecord objects, to drill into single requests
+    server.stats()  # flat counters: GETs, bytes, misses, peak concurrency, raw paths
+    server.report()  # high-level summary: totals + by_label / by_status breakdowns
+    server.requests  # the individual RequestRecord objects, to drill into single requests
 ```
 
 **`report()`** is the headline — a plain, JSON-serializable dict built from *exact*
 counters, so it's easy to assert on or log:
 
 ```python
-{'n_requests': 84, 'n_gets': 84, 'n_misses': 0, 'total_bytes': 9700000, 'max_in_flight': 4,
- 'by_label': {'level 0': {'requests': 64, 'bytes': 8400000},
-              'level 1': {'requests': 20, 'bytes': 1300000}},
- 'by_status': {200: 82, 206: 2},
- 'records_kept': 84, 'records_truncated': False}
+{
+    "n_requests": 84,
+    "n_gets": 84,
+    "n_misses": 0,
+    "total_bytes": 9700000,
+    "max_in_flight": 4,
+    "by_label": {
+        "level 0": {"requests": 64, "bytes": 8400000},
+        "level 1": {"requests": 20, "bytes": 1300000},
+    },
+    "by_status": {200: 82, 206: 2},
+    "records_kept": 84,
+    "records_truncated": False,
+}
 ```
 
 `by_label` groups requests however you want via a **`classify=` function** passed to the
@@ -157,6 +166,7 @@ so you control format, level, and where it goes):
 
 ```python
 import logging
+
 logging.getLogger("snailmail").setLevel(logging.INFO)
 logging.getLogger("snailmail").addHandler(logging.StreamHandler())
 # GET chunks/0.0.0 [level 0] -> 200  97405B  +45ms latency  113ms total  4 in flight
@@ -225,7 +235,7 @@ from snailmail.convenience import icechunk_storage
 
 with ObjectStore(latency=LogNormal(mode_ms=45)) as store:
     repo = icechunk.Repository.open(icechunk_storage(store, prefix="my-repo"))
-    read_an_array(repo)        # the reopen + read you're benchmarking
+    read_an_array(repo)  # the reopen + read you're benchmarking
 
     print(store.stats())
     # {'n_requests': 6, 'n_misses': 2, 'metadata_requests': 4, 'data_requests': 0,
@@ -264,15 +274,15 @@ uplink/downlink, and their combined traffic contends for it:
 ```python
 from snailmail import ObjectStore, ClientLink, LogNormal
 
-client = ClientLink(down_mbs=50, up_mbs=10)   # your laptop's connection (asymmetric)
+client = ClientLink(down_mbs=50, up_mbs=10)  # your laptop's connection (asymmetric)
 
-ice  = ObjectStore(bucket="icechunk",    latency=LogNormal(mode_ms=30),  client=client)
+ice = ObjectStore(bucket="icechunk", latency=LogNormal(mode_ms=30), client=client)
 data = ObjectStore(bucket="source-data", latency=LogNormal(mode_ms=150), client=client)
 
 with ice, data:
-    ...                       # repo on `ice`; virtual chunks resolved against `data`
-    ice.report()              # metadata round-trips, on the fast bucket
-    data.report()             # virtual-data fetches, on the slow bucket
+    ...  # repo on `ice`; virtual chunks resolved against `data`
+    ice.report()  # metadata round-trips, on the fast bucket
+    data.report()  # virtual-data fetches, on the slow bucket
     # ice + data downloads can't jointly exceed 50 MB/s — they share `client.down`
 ```
 
@@ -308,7 +318,7 @@ from snailmail import ObjectStore, StoreBehavior
 # Behaves like JASMIN: reject conditional writes with NotImplemented.
 with ObjectStore(behavior=StoreBehavior(conditional_writes="reject")) as store:
     ...
-    print(store.stats()["conditional_rejected"])   # count of writes refused
+    print(store.stats()["conditional_rejected"])  # count of writes refused
 ```
 
 `"ignore"` is the quieter hazard — the write *succeeds* but loses its atomicity guarantee,

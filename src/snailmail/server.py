@@ -120,7 +120,7 @@ class HTTPRangeServer:
         port: int = 0,
         classify: Callable[[str], str] = identity,
         max_records: int | None = 100_000,
-    ) -> "HTTPRangeServer":
+    ) -> HTTPRangeServer:
         """Serve a single file directly, reachable at its basename.
 
         The file is streamed straight from disk by aiohttp's ``FileResponse`` — the
@@ -337,7 +337,7 @@ class HTTPRangeServer:
         self._ready.set()
         self._loop.run_forever()
 
-    def start(self) -> "HTTPRangeServer":
+    def start(self) -> HTTPRangeServer:
         threading.Thread(target=self._serve, daemon=True).start()
         self._ready.wait()
         if self._startup_exc is not None:
@@ -453,7 +453,7 @@ class HTTPRangeServer:
     def realized_percentiles(self) -> dict:
         return self.latency.percentiles()
 
-    def __enter__(self) -> "HTTPRangeServer":
+    def __enter__(self) -> HTTPRangeServer:
         return self.start()
 
     def __exit__(self, *exc) -> None:
