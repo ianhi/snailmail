@@ -24,17 +24,17 @@ except PackageNotFoundError:  # running from a source tree with no install
     __version__ = "0+unknown"
 
 __all__ = [
-    "HTTPRangeServer",
-    "ObjectStore",
-    "StoreBehavior",
-    "RequestRecord",
-    "LatencyMiddleware",
-    "ClientLink",
     "AsyncSharedPipe",
-    "SharedPipe",
-    "LatencyDist",
-    "LogNormal",
-    "Normal",
+    "ClientLink",
     "Exponential",
     "Fixed",
+    "HTTPRangeServer",
+    "LatencyDist",
+    "LatencyMiddleware",
+    "LogNormal",
+    "Normal",
+    "ObjectStore",
+    "RequestRecord",
+    "SharedPipe",
+    "StoreBehavior",
 ]
