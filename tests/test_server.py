@@ -95,9 +95,8 @@ def test_requires_a_directory(tmp_path):
 
 def test_startup_failure_propagates(datadir):
     # A bind failure must raise from start(), not hang forever waiting on _ready.
-    with HTTPRangeServer(datadir) as running:
-        with pytest.raises(OSError):
-            HTTPRangeServer(datadir, port=running.port).start()
+    with HTTPRangeServer(datadir) as running, pytest.raises(OSError):
+        HTTPRangeServer(datadir, port=running.port).start()
 
 
 def test_serves_from_disk_not_ram(datadir):
@@ -176,8 +175,7 @@ def test_max_records_bounds_buffer_but_not_counts(datadir):
 def test_request_log_emits(datadir, caplog):
     import logging
 
-    with caplog.at_level(logging.INFO, logger="snailmail.http"):
-        with HTTPRangeServer(datadir) as s:
-            _get(s.url("data.bin"), 0, 100)
+    with caplog.at_level(logging.INFO, logger="snailmail.http"), HTTPRangeServer(datadir) as s:
+        _get(s.url("data.bin"), 0, 100)
     lines = [r.getMessage() for r in caplog.records if r.name == "snailmail.http"]
     assert any("GET data.bin" in m and "-> 206" in m for m in lines)
