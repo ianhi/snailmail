@@ -42,8 +42,9 @@ from __future__ import annotations
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Literal
 
 from snailmail.bandwidth import ClientLink, SharedPipe
 from snailmail.latency import Fixed, LatencyDist
@@ -574,7 +575,7 @@ class ObjectStore:
         self._ready.set()
         self._server.serve_forever()
 
-    def start(self) -> "ObjectStore":
+    def start(self) -> ObjectStore:
         threading.Thread(target=self._serve, daemon=True).start()
         self._ready.wait()
         if self._startup_exc is not None:
@@ -658,7 +659,7 @@ class ObjectStore:
         )
         return d
 
-    def __enter__(self) -> "ObjectStore":
+    def __enter__(self) -> ObjectStore:
         return self.start()
 
     def __exit__(self, *exc) -> None:
